@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-merge-tool"
+version = "2.2.0"
+description = "A PySide6 desktop tool for reading, previewing, merging, and exporting experimental data files."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "xlrd>=2.0.1",
+    "charset-normalizer>=3.0",
+    "matplotlib>=3.7",
+    "PySide6>=6.6",
+    "originpro>=1.1.15",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+data-merge-tool = "data_merge_tool.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+data_merge_tool = ["assets/*.svg"]

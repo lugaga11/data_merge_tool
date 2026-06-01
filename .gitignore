@@ -1,0 +1,38 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and package outputs
+artifacts/
+build/
+dist/
+*.egg-info/
+*.manifest
+*.pkg
+*.toc
+*.pyz
+xref-*.html
+warn-*.txt
+
+# Local application data
+user_presets.json
+origin_exports/
+
+# Local validation data
+sample/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
