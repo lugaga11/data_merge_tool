@@ -3,36 +3,34 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, List, Optional, TypeAlias
 
-from .constants import DRAG_INTERNAL, MOVE_ACTION, SELECTION_EXTENDED
-from .data_io import scan_data_files
-from .qt import (
-    QComboBox,
-    QDoubleSpinBox,
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QThread, Signal
+from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
-    QEvent,
+    QMouseEvent,
+    QPainter,
+    QPolygon,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
-    QMouseEvent,
-    QObject,
-    QPainter,
-    QPoint,
-    QPolygon,
     QPushButton,
     QSizePolicy,
     QSpinBox,
-    QThread,
-    Qt,
     QVBoxLayout,
-    QWheelEvent,
     QWidget,
-    Signal,
 )
+
+from .constants import DRAG_INTERNAL, MOVE_ACTION, SELECTION_EXTENDED
+from .data_io import scan_data_files
 
 
 class NoWheelComboBox(QComboBox):
@@ -364,7 +362,7 @@ class DropFileList(QListWidget):
                 path = Path(local_path)
                 if path.is_dir():
                     paths.extend(scan_data_files(path))
-                else:
+                elif path.is_file():
                     paths.append(str(path))
             self.files_dropped.emit(paths)
             event.acceptProposedAction()

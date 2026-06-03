@@ -10,11 +10,12 @@ from pathlib import Path
 import re
 from typing import Any, Optional
 
-from .qt import (
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QEvent,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -24,18 +25,14 @@ from .qt import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QObject,
-    QPoint,
     QPushButton,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
     QStatusBar,
-    Qt,
     QVBoxLayout,
     QWidget,
-    QMouseEvent,
 )
 from .widgets import (
     NoWheelComboBox,

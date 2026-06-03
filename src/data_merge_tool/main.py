@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 
 import pandas as pd
+from PySide6.QtWidgets import QApplication
 
-from .qt import QApplication
 from .main_window import MainWindow
 
 

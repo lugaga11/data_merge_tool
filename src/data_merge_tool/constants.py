@@ -3,7 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from .qt import QAbstractItemView, QHeaderView, Qt
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
 
 APP_TITLE = "数据合并工具"

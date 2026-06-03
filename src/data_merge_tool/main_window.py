@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 
 import pandas as pd
-from .qt import (
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent, QFont, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QCloseEvent,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -29,10 +30,6 @@ from .qt import (
     QTableView,
     QVBoxLayout,
     QWidget,
-    QFont,
-    QKeySequence,
-    QShortcut,
-    Qt,
 )
 
 try:
@@ -69,7 +66,6 @@ from .data_io import (
     is_supported_data_file,
     natural_sort_key,
     read_table,
-    scan_data_files,
     source_label_sort_key,
 )
 from .data_types import MergeOptions, OriginImportData, ReadDetection, ReadOptions
@@ -78,7 +74,15 @@ from .models import DataFrameModel
 from .origin import import_dataframe_to_origin
 from .origin_panel import PANEL_STYLE as ORIGIN_PANEL_STYLE
 from .origin_panel import OriginPanelWidget
-from .widgets import DataTask, DropFileList, NoWheelComboBox, NoWheelSpinBox, choose_directory, choose_open_files, choose_save_file, make_button
+from .widgets import (
+    DataTask,
+    DropFileList,
+    NoWheelComboBox,
+    NoWheelSpinBox,
+    choose_open_files,
+    choose_save_file,
+    make_button,
+)
 
 
 class MainWindow(QMainWindow):
@@ -184,8 +188,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.fileList, 1)
 
         row1 = QHBoxLayout()
-        row1.addWidget(self._button("添加文件", self.choose_files, "primary"))
-        row1.addWidget(self._button("添加文件夹", self.choose_folder))
+        row1.addWidget(self._button("添加文件", self.choose_files, "primary"), 1)
+        row1.addWidget(self._button("全选", self.select_all_files), 1)
+        row1.addWidget(self._button("取消全选", self.clear_file_checks), 1)
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -514,6 +519,28 @@ class MainWindow(QMainWindow):
         ]
         return [item.data(USER_ROLE) for item in checked_items]
 
+    def set_file_checks(self, checked: bool) -> None:
+        if self.fileList.count() == 0:
+            return
+        self._updating_file_list = True
+        previous_blocked = self.fileList.blockSignals(True)
+        try:
+            state = CHECKED if checked else UNCHECKED
+            for row in range(self.fileList.count()):
+                self.fileList.item(row).setCheckState(state)
+        finally:
+            self.fileList.blockSignals(previous_blocked)
+            self._updating_file_list = False
+        action = "选中" if checked else "取消选中"
+        self.statusBar().showMessage(f"已{action} {self.fileList.count()} 个文件。", 3000)
+        self.mark_output_dirty()
+
+    def select_all_files(self) -> None:
+        self.set_file_checks(True)
+
+    def clear_file_checks(self) -> None:
+        self.set_file_checks(False)
+
     def paths_to_merge(self, show_errors: bool = False) -> List[str]:
         if self.scopeBox.currentText() == "仅选中文件":
             paths = self.selected_paths()
@@ -746,16 +773,6 @@ class MainWindow(QMainWindow):
         paths = choose_open_files(self, "选择数据文件", SUPPORTED_FILES)
         self.add_paths(paths)
 
-    def choose_folder(self) -> None:
-        folder = choose_directory(self, "选择数据文件夹", "")
-        if not folder:
-            return
-        paths = scan_data_files(Path(folder))
-        if not paths:
-            QMessageBox.information(self, "提示", "这个文件夹里没有找到支持的数据文件。")
-            return
-        self.add_paths(paths)
-
     def add_paths(self, paths: Sequence[str], sort_input: bool = True) -> None:
         existing = set(self.all_paths())
         added = 0
@@ -766,16 +783,6 @@ class MainWindow(QMainWindow):
         try:
             for raw_path in ordered_paths:
                 path = Path(raw_path)
-                if path.is_dir():
-                    for nested_path in scan_data_files(path):
-                        nested = Path(nested_path)
-                        if str(nested) in existing:
-                            skipped += 1
-                            continue
-                        self.fileList.addItem(self.make_file_item(nested))
-                        existing.add(str(nested))
-                        added += 1
-                    continue
                 if not is_supported_data_file(path) or str(path) in existing:
                     skipped += 1
                     continue
