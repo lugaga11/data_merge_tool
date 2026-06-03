@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import re
 from dataclasses import dataclass
@@ -40,6 +41,12 @@ class _RowProfile:
     has_text: bool
 
 
+@dataclass(frozen=True)
+class _DetectionCandidate:
+    detection: ReadDetection
+    score: tuple[int, int, int, int]
+
+
 _NUMERIC_TOKEN = re.compile(r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$")
 _AUTO_DELIMITER_CANDIDATES = [",", "\t", ";", "whitespace"]
 _DELIMITER_LABELS = {
@@ -75,15 +82,19 @@ def _delimiter_label(delimiter: str) -> str:
     return _DELIMITER_LABELS.get(delimiter, "自动")
 
 
+def _clean_text_field(value: str) -> str:
+    return value.strip().lstrip("\ufeff")
+
+
 def _split_fields(text: str, delimiter: str) -> List[str]:
-    stripped = text.strip()
-    if not stripped:
+    if not text.strip():
         return []
     if delimiter == "whitespace":
-        return [field.strip() for field in re.split(r"\s+", stripped) if field.strip()]
-    else:
-        fields = stripped.split(delimiter)
-    return [field.strip() for field in fields]
+        return [_clean_text_field(field) for field in re.split(r"\s+", text.strip()) if field.strip()]
+
+    line = text.lstrip("\ufeff")
+    fields = next(csv.reader([line], delimiter=delimiter, skipinitialspace=True))
+    return [_clean_text_field(field) for field in fields]
 
 
 def _is_numeric_token(value: object) -> bool:
@@ -91,31 +102,36 @@ def _is_numeric_token(value: object) -> bool:
         return False
     if isinstance(value, (int, float)) and not pd.isna(cast(Any, value)):
         return True
-    return bool(_NUMERIC_TOKEN.fullmatch(str(value).strip()))
+    text = _clean_text_field(str(value))
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = _clean_text_field(text[1:-1])
+    return bool(_NUMERIC_TOKEN.fullmatch(text))
 
 
 def _text_row_profile(index: int, line: str, delimiter: str) -> _RowProfile:
     fields = _split_fields(line, delimiter)
     non_empty_fields = [field for field in fields if field]
-    numeric_count = sum(1 for field in non_empty_fields if _is_numeric_token(field))
+    numeric_flags = [_is_numeric_token(field) for field in non_empty_fields]
+    numeric_count = sum(1 for is_numeric in numeric_flags if is_numeric)
     return _RowProfile(
         index=index,
         field_count=len(fields),
         non_empty_count=len(non_empty_fields),
         numeric_count=numeric_count,
-        has_text=any(not _is_numeric_token(field) for field in non_empty_fields),
+        has_text=any(not is_numeric for is_numeric in numeric_flags),
     )
 
 
 def _excel_row_profile(index: int, row: pd.Series) -> _RowProfile:
     fields = [value for value in row.tolist() if not pd.isna(cast(Any, value))]
-    numeric_count = sum(1 for value in fields if _is_numeric_token(value))
+    numeric_flags = [_is_numeric_token(value) for value in fields]
+    numeric_count = sum(1 for is_numeric in numeric_flags if is_numeric)
     return _RowProfile(
         index=index,
         field_count=len(fields),
         non_empty_count=len(fields),
         numeric_count=numeric_count,
-        has_text=any(not _is_numeric_token(value) for value in fields),
+        has_text=any(not is_numeric for is_numeric in numeric_flags),
     )
 
 
@@ -160,20 +176,32 @@ def _detect_from_profiles(
     min_streak: int = 3,
     allow_wide_header: bool = False,
     allow_partial_header: bool = False,
-) -> ReadDetection:
-    best: Optional[ReadDetection] = None
-    best_score: tuple[int, int, int, int] = (-1, -1, -10_000, -1)
+) -> _DetectionCandidate:
+    best: Optional[_DetectionCandidate] = None
+    best_score: tuple[int, int, int, int] = (-1, -1, -1, -10_000)
 
-    for start in range(0, max(len(profiles) - min_streak + 1, 0)):
-        streak = list(profiles[start : start + min_streak])
-        if not all(_is_data_profile(profile) for profile in streak):
+    start = 0
+    while start < len(profiles):
+        first = profiles[start]
+        if not _is_data_profile(first):
+            start += 1
             continue
 
-        data_width = streak[0].field_count
-        if any(profile.field_count != data_width for profile in streak):
+        data_width = first.field_count
+        end = start
+        while (
+            end < len(profiles)
+            and _is_data_profile(profiles[end])
+            and profiles[end].field_count == data_width
+        ):
+            end += 1
+
+        run_length = end - start
+        if run_length < min_streak:
+            start = end
             continue
 
-        data_start = streak[0].index
+        data_start = first.index
         header = profiles[start - 1] if start > 0 else None
         has_header = bool(
             header is not None
@@ -194,21 +222,26 @@ def _detect_from_profiles(
             confident=True,
             message=message,
         )
-        score = (1 if has_header else 0, data_width, -skip_rows, min_streak)
+        score = (1 if has_header else 0, data_width, run_length, -skip_rows)
         if score > best_score:
-            best = detection
+            best = _DetectionCandidate(detection=detection, score=score)
             best_score = score
+
+        start = end
 
     if best is not None:
         return best
 
-    return ReadDetection(
-        skip_rows=fallback_skip_rows,
-        delimiter_label=fallback_delimiter_label,
-        encoding_label=fallback_encoding_label,
-        has_header=fallback_has_header,
-        confident=False,
-        message="未能可靠识别数据起点，继续使用手动读入设置。",
+    return _DetectionCandidate(
+        detection=ReadDetection(
+            skip_rows=fallback_skip_rows,
+            delimiter_label=fallback_delimiter_label,
+            encoding_label=fallback_encoding_label,
+            has_header=fallback_has_header,
+            confident=False,
+            message="未能可靠识别数据起点，继续使用手动读入设置。",
+        ),
+        score=(-1, -1, -1, -10_000),
     )
 
 
@@ -237,16 +270,16 @@ def detect_read_options(
                 delimiter_label=delimiter_label,
                 encoding_label=encoding_label,
                 allow_partial_header=True,
-            )
+            ).detection
 
         encoding = detect_encoding(path, encoding_label)
         with path.open("r", encoding=encoding, errors="replace") as handle:
             lines = [line.rstrip("\r\n") for _, line in zip(range(max_rows), handle)]
 
-        detections: List[ReadDetection] = []
+        candidates: List[_DetectionCandidate] = []
         for delimiter in _delimiter_candidates(delimiter_label):
             profiles = [_text_row_profile(index, line, delimiter) for index, line in enumerate(lines)]
-            detection = _detect_from_profiles(
+            candidate = _detect_from_profiles(
                 profiles,
                 fallback_skip_rows,
                 fallback_delimiter_label=delimiter_label,
@@ -256,17 +289,11 @@ def detect_read_options(
                 encoding_label=encoding,
                 allow_wide_header=delimiter == "whitespace",
             )
-            if detection.confident:
-                detections.append(detection)
+            if candidate.detection.confident:
+                candidates.append(candidate)
 
-        if detections:
-            return max(
-                detections,
-                key=lambda detection: (
-                    1 if detection.has_header else 0,
-                    -detection.skip_rows,
-                ),
-            )
+        if candidates:
+            return max(candidates, key=lambda candidate: candidate.score).detection
     except Exception:
         pass
 
@@ -415,20 +442,21 @@ def _wide_whitespace_header_names(path: Path, options: ReadOptions) -> Optional[
         return None
 
     encoding = detect_encoding(path, options.encoding_label)
-    with path.open("r", encoding=encoding, errors="replace") as handle:
-        lines = [line.rstrip("\r\n") for line in handle]
-
-    if options.skip_rows < 0 or options.skip_rows >= len(lines):
-        return None
-
-    header_tokens = _split_fields(lines[options.skip_rows], "whitespace")
+    header_tokens: Optional[List[str]] = None
     data_tokens: List[str] = []
-    for line in lines[options.skip_rows + 1 :]:
-        data_tokens = _split_fields(line, "whitespace")
-        if data_tokens:
-            break
+    with path.open("r", encoding=encoding, errors="replace") as handle:
+        for index, line in enumerate(handle):
+            text = line.rstrip("\r\n")
+            if index == options.skip_rows:
+                header_tokens = _split_fields(text, "whitespace")
+                continue
+            if index <= options.skip_rows:
+                continue
+            data_tokens = _split_fields(text, "whitespace")
+            if data_tokens:
+                break
 
-    if not data_tokens or not all(_is_numeric_token(token) for token in data_tokens):
+    if header_tokens is None or not data_tokens or not all(_is_numeric_token(token) for token in data_tokens):
         return None
 
     return _combine_wide_whitespace_header_tokens(header_tokens, len(data_tokens))
@@ -470,6 +498,8 @@ def read_table(
             )
         else:
             header_names = _wide_whitespace_header_names(path, options)
+            sep = delimiter_value(options.delimiter_label)
+            engine = "python" if sep is None or sep == r"\s+" else "c"
             df = pd.read_csv(
                 path,
                 header=None if header_names is not None else header,
@@ -477,9 +507,9 @@ def read_table(
                 skiprows=options.skip_rows + 1 if header_names is not None else options.skip_rows,
                 nrows=nrows,
                 usecols=selected_columns,
-                sep=delimiter_value(options.delimiter_label),
+                sep=sep,
                 encoding=detect_encoding(path, options.encoding_label),
-                engine="python",
+                engine=engine,
                 on_bad_lines="skip" if options.skip_bad_lines else "error",
             )
             if options.skip_bad_lines:
