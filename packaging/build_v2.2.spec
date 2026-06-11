@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(SPECPATH).resolve().parents[0]
-ENTRY = next(ROOT.glob("*_v2.2.py"))
+ENTRY = next(ROOT.glob("*_v2.2.1.py"))
 ASSET = ROOT / "src" / "data_merge_tool" / "assets" / "ui_checkmark.svg"
 
 
@@ -47,7 +47,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="数据合并工具v2.2",
+    name="数据合并工具v2.2.1",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

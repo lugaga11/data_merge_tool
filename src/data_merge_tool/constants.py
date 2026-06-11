@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
 
 APP_TITLE = "数据合并工具"
-APP_VERSION = "v2.2"
+APP_VERSION = "v2.2.1"
 TEXT_DATA_EXTENSIONS = {
     ".csv",
     ".txt",
@@ -59,6 +59,7 @@ DISPLAY_ROLE = Qt.ItemDataRole.DisplayRole
 TEXT_ALIGNMENT_ROLE = Qt.ItemDataRole.TextAlignmentRole
 HORIZONTAL = Qt.Orientation.Horizontal
 VERTICAL = Qt.Orientation.Vertical
+COPY_ACTION = Qt.DropAction.CopyAction
 MOVE_ACTION = Qt.DropAction.MoveAction
 USER_ROLE = Qt.ItemDataRole.UserRole
 ALIGN_LEFT_CENTER = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
@@ -67,7 +68,7 @@ CHECKED = Qt.CheckState.Checked
 UNCHECKED = Qt.CheckState.Unchecked
 SELECTION_EXTENDED = QAbstractItemView.SelectionMode.ExtendedSelection
 SELECTION_NONE = QAbstractItemView.SelectionMode.NoSelection
-DRAG_INTERNAL = QAbstractItemView.DragDropMode.InternalMove
+DRAG_DROP = QAbstractItemView.DragDropMode.DragDrop
 NO_EDIT_TRIGGERS = QAbstractItemView.EditTrigger.NoEditTriggers
 SELECT_ROWS = QAbstractItemView.SelectionBehavior.SelectRows
 HEADER_INTERACTIVE = QHeaderView.ResizeMode.Interactive

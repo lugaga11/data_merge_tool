@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .constants import DRAG_INTERNAL, MOVE_ACTION, SELECTION_EXTENDED
+from .constants import COPY_ACTION, DRAG_DROP, MOVE_ACTION, SELECTION_EXTENDED
 from .data_io import scan_data_files
 
 
@@ -336,19 +336,24 @@ class DropFileList(QListWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setSelectionMode(SELECTION_EXTENDED)
-        self.setDragDropMode(DRAG_INTERNAL)
+        self.setDragDropMode(DRAG_DROP)
         self.setDefaultDropAction(MOVE_ACTION)
         self.setAlternatingRowColors(True)
 
+    def _accept_external_file_drag(self, event: QDragEnterEvent | QDragMoveEvent | QDropEvent) -> bool:
+        if not event.mimeData().hasUrls():
+            return False
+        event.setDropAction(COPY_ACTION)
+        event.accept()
+        return True
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
+        if self._accept_external_file_drag(event):
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
+        if self._accept_external_file_drag(event):
             return
         super().dragMoveEvent(event)
 
@@ -365,7 +370,7 @@ class DropFileList(QListWidget):
                 elif path.is_file():
                     paths.append(str(path))
             self.files_dropped.emit(paths)
-            event.acceptProposedAction()
+            self._accept_external_file_drag(event)
             return
         super().dropEvent(event)
 
