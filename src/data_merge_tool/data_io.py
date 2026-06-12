@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence, cast
 
 import pandas as pd
-from charset_normalizer import from_path
 
 from .constants import EXCEL_READER_DEPENDENCIES, SUPPORTED_EXTENSIONS
 from .data_types import MergeOptions, OriginImportData, ReadDetection, ReadOptions
@@ -49,6 +48,8 @@ class _DetectionCandidate:
 
 _NUMERIC_TOKEN = re.compile(r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$")
 _AUTO_DELIMITER_CANDIDATES = [",", "\t", ";", "whitespace"]
+_ENCODING_SAMPLE_BYTES = 32 * 1024
+_EXCEL_ENCODING_LABEL = "Excel 内置"
 _DELIMITER_LABELS = {
     ",": "逗号 ,",
     "\t": "Tab",
@@ -76,6 +77,18 @@ def _delimiter_candidates(label: str) -> List[str]:
         "分号 ;": [";"],
     }
     return mapping.get(label, _AUTO_DELIMITER_CANDIDATES)
+
+
+def _active_delimiter_candidates(label: str, lines: Sequence[str]) -> List[str]:
+    candidates = _delimiter_candidates(label)
+    if label != "自动":
+        return candidates
+
+    active: List[str] = []
+    for delimiter in candidates:
+        if delimiter == "whitespace" or any(delimiter in line for line in lines):
+            active.append(delimiter)
+    return active
 
 
 def _delimiter_label(delimiter: str) -> str:
@@ -265,10 +278,10 @@ def detect_read_options(
                 profiles,
                 fallback_skip_rows,
                 fallback_delimiter_label=delimiter_label,
-                fallback_encoding_label=encoding_label,
+                fallback_encoding_label=_EXCEL_ENCODING_LABEL,
                 fallback_has_header=fallback_has_header,
                 delimiter_label=delimiter_label,
-                encoding_label=encoding_label,
+                encoding_label=_EXCEL_ENCODING_LABEL,
                 allow_partial_header=True,
             ).detection
 
@@ -277,7 +290,7 @@ def detect_read_options(
             lines = [line.rstrip("\r\n") for _, line in zip(range(max_rows), handle)]
 
         candidates: List[_DetectionCandidate] = []
-        for delimiter in _delimiter_candidates(delimiter_label):
+        for delimiter in _active_delimiter_candidates(delimiter_label, lines):
             profiles = [_text_row_profile(index, line, delimiter) for index, line in enumerate(lines)]
             candidate = _detect_from_profiles(
                 profiles,
@@ -335,15 +348,33 @@ def scan_data_files(folder: Path) -> List[str]:
     return [str(path) for path in paths]
 
 
+def _count_cjk(text: str) -> int:
+    return sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+
+
 def detect_encoding(path: Path, label: str) -> str:
     if label == "自动":
-        try:
-            best = from_path(str(path)).best()
-            return best.encoding if best and best.encoding else "utf-8"
-        except Exception:
+        if path.suffix.lower() in {".xlsx", ".xls"}:
+            return _EXCEL_ENCODING_LABEL
+        with path.open("rb") as handle:
+            raw = handle.read(_ENCODING_SAMPLE_BYTES)
+        if raw.startswith(b"\xef\xbb\xbf"):
+            return "utf-8-sig"
+        if not raw or raw.isascii():
             return "utf-8"
+        for encoding in ("utf-8", "gbk"):
+            try:
+                text = raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            if encoding == "gbk" and _count_cjk(text) < 2:
+                continue
+            return encoding
+        return "latin1"
     if label == "ANSI/系统默认":
         return "mbcs"
+    if label == _EXCEL_ENCODING_LABEL:
+        return "utf-8"
     return label
 
 

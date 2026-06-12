@@ -95,6 +95,12 @@ git status --short
 - 对外合并入口优先使用 `build_origin_import_table()` 和 `build_prechecked_merged_table()`。
 - 不要重新引入只返回 dataframe 的薄 wrapper，除非确实有新的调用方需要。
 - 数据读取逻辑要尽量保留结构化解析；不要用临时字符串拼接绕过 `read_table()`、`detect_read_options()`、`preflight_merge_columns()` 等已有边界。
+- 自动读入检测集中在 `src/data_merge_tool/data_io.py`：`detect_read_options()` 只读取前 500 行做分隔符、表头和数据起点判断，`read_table()` 才负责完整读取。不要为了某个样例把完整文件扫描重新塞回检测路径。
+- 表头候选使用 `_DetectionCandidate` 评分，优先级是有无表头、数据列宽、连续数据行长度、起始行更靠前；不要再恢复只比较 header/skip 行的零散判断。
+- 分隔符拆分必须走 `_split_fields()`，逗号/Tab/分号使用 `csv.reader`，这样 quoted 数字和空字段不会被误判；不要退回简单 `str.split()`。
+- 自动编码检测为快速路径：BOM、ASCII/UTF-8、确有中文的 GBK，最后用 `latin1` 保住西文仪器符号；不要重新引入 `charset-normalizer`、`cp1250/cp1257` 猜测或编码缓存。手动的 `ANSI/系统默认` 仍映射到 `mbcs`。
+- Excel 文件不做文本编码探测，自动编码显示为 `Excel 内置`，实际读取交给 `openpyxl`/`xlrd`。
+- `跳过异常行` 只处理数据区内的坏行，不负责自动跳过文件开头的说明区。像 `sample/kto sw 2v.csv` 这类前 30 行是仪器设置、31 行才是真表头的文件，手动 `skip_rows=0` 本来就会让 pandas 从说明区开始建表并可能失败；正确行为是自动识别或手动跳过 30 行。
 
 ## 代码风格
 
