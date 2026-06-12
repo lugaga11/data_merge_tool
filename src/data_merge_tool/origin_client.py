@@ -79,11 +79,24 @@ class OriginWorkerClient:
         self._process = None
         if process is None:
             return
-        if process.poll() is None:
-            process.kill()
+        try:
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            self._close_process_pipes(process)
+
+    @staticmethod
+    def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is None:
+                continue
             try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                stream.close()
+            except OSError:
                 pass
 
     def _readline_with_timeout(self, process: subprocess.Popen[str], timeout_seconds: float) -> str:
@@ -215,6 +228,7 @@ class OriginWorkerClient:
         if process is None:
             return
         if process.poll() is not None:
+            self._close_process_pipes(process)
             self._process = None
             return
         try:

@@ -21,7 +21,7 @@
 - `src/data_merge_tool/models.py`：表格预览模型。
 - `src/data_merge_tool/data_types.py`：跨模块传递的数据结构。
 - `src/data_merge_tool/errors.py`：用户可见异常类型。
-- `packaging/build_v2.2.spec`：当前 PyInstaller 打包配置。
+- `packaging/build_windows.spec`：当前 PyInstaller 打包配置。
 - `sample/`：本地验证样例数据，已被 `.gitignore` 排除。
 - `artifacts/`：本地构建和发布产物，已被 `.gitignore` 排除。
 
@@ -50,6 +50,7 @@ $env:PYTHONPATH=(Resolve-Path -LiteralPath 'src').Path
 提交前至少跑：
 
 ```powershell
+& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -B -m unittest tests.test_origin_client -v
 git diff --check
 git status --short
 ```
@@ -58,13 +59,13 @@ git status --short
 
 ## 打包
 
-当前打包锚点是 `packaging/build_v2.2.spec`，入口会匹配根目录的 `*_v2.3.0.py`。使用 PyInstaller 时建议继续沿用 `my_base`：
+当前打包锚点是 `packaging/build_windows.spec`，入口会匹配根目录的 `*_v2.3.0.py`。使用 PyInstaller 时建议继续沿用 `my_base`：
 
 ```powershell
 & 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
   --workpath .\artifacts\build\v2.3.0 `
-  .\packaging\build_v2.2.spec
+  .\packaging\build_windows.spec
 ```
 
 打包产物默认不提交。发布时只提交源码和配置，exe 放到 `artifacts/dist/` 或 GitHub Release。

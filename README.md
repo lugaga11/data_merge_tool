@@ -40,7 +40,7 @@ data-merge-tool
 python -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
   --workpath .\artifacts\build\v2.3.0 `
-  .\packaging\build_v2.2.spec
+  .\packaging\build_windows.spec
 ```
 
 打包输出默认位于 `artifacts/dist/`，该目录已被 `.gitignore` 排除。
@@ -50,6 +50,7 @@ python -m PyInstaller --clean --noconfirm `
 ```powershell
 python -m compileall -q src\data_merge_tool
 python -m py_compile src\data_merge_tool\origin_panel.py src\data_merge_tool\main.py .\数据合并工具_v2.3.0.py
+python -m unittest tests.test_origin_client -v
 ```
 
 ## 模块说明
