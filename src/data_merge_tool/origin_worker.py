@@ -76,6 +76,11 @@ def dispatch(adapter: OriginAdapter, command: str, payload: dict[str, Any]) -> A
 
 
 def main() -> int:
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+
     adapter = OriginAdapter()
     for raw_line in sys.stdin:
         line = raw_line.strip()
@@ -102,7 +107,7 @@ def main() -> int:
                     "traceback": traceback.format_exc(),
                 },
             }
-        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+        sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
         sys.stdout.flush()
         if command == "shutdown":
             break

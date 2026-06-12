@@ -124,7 +124,7 @@ class OriginWorkerClient:
             self._next_id += 1
             request = {"id": request_id, "command": command, "payload": payload or {}}
             try:
-                stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+                stdin.write(json.dumps(request, ensure_ascii=True) + "\n")
                 stdin.flush()
             except Exception as exc:
                 self._kill_process()
