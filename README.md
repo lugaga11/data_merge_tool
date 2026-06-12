@@ -1,12 +1,12 @@
 # 数据合并工具
 
-当前开发版本：v2.2.1。
+当前开发版本：v2.2.2。
 
-这是一个基于 PySide6 的桌面工具，用于读取多种实验数据文件，预览并合并数据列，并支持将结果导出或发送到 Origin。根目录的 `数据合并工具_v2.2.1.py` 是本地启动入口，实际业务代码在 `src/data_merge_tool/` 中。
+这是一个基于 PySide6 的桌面工具，用于读取多种实验数据文件，预览并合并数据列，并支持将结果导出或发送到 Origin。根目录的 `数据合并工具_v2.2.2.py` 是本地启动入口，实际业务代码在 `src/data_merge_tool/` 中。
 
 ## 目录结构
 
-- `src/data_merge_tool/`：当前 v2.2.1 模块化源码。
+- `src/data_merge_tool/`：当前 v2.2.2 模块化源码。
 - `src/data_merge_tool/assets/`：界面静态资源。
 - `sample/`：用于手动验证读取和合并逻辑的示例数据。
 - `packaging/`：PyInstaller 打包配置。
@@ -18,7 +18,7 @@
 
 ```powershell
 pip install -r .\requirements_desktop.txt
-python .\数据合并工具_v2.2.1.py
+python .\数据合并工具_v2.2.2.py
 ```
 
 也可以用可编辑安装方式运行：
@@ -31,7 +31,7 @@ data-merge-tool
 如果使用现有 conda 环境：
 
 ```powershell
-& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' .\数据合并工具_v2.2.1.py
+& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' .\数据合并工具_v2.2.2.py
 ```
 
 ## 打包
@@ -39,7 +39,7 @@ data-merge-tool
 ```powershell
 python -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
-  --workpath .\artifacts\build\v2.2.1 `
+  --workpath .\artifacts\build\v2.2.2 `
   .\packaging\build_v2.2.spec
 ```
 
@@ -49,7 +49,7 @@ python -m PyInstaller --clean --noconfirm `
 
 ```powershell
 python -m compileall -q src\data_merge_tool
-python -m py_compile src\data_merge_tool\origin_panel.py src\data_merge_tool\main.py .\数据合并工具_v2.2.1.py
+python -m py_compile src\data_merge_tool\origin_panel.py src\data_merge_tool\main.py .\数据合并工具_v2.2.2.py
 ```
 
 ## 模块说明

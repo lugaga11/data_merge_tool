@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
 
 APP_TITLE = "数据合并工具"
-APP_VERSION = "v2.2.1"
+APP_VERSION = "v2.2.2"
 TEXT_DATA_EXTENSIONS = {
     ".csv",
     ".txt",
@@ -126,7 +126,7 @@ QListWidget:focus, QTableView:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:
 }
 QComboBox {
     min-height: 24px;
-    padding: 3px 31px 3px 8px;
+    padding: 3px 6px 3px 8px;
 }
 QComboBox::drop-down {
     subcontrol-origin: border;

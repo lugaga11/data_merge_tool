@@ -253,6 +253,9 @@ class MainWindow(QMainWindow):
         self.headerModeBox.addItems(["自动", "手动"])
         self.headerModeBox.setToolTip("自动识别表头；不可靠时退回手动勾选状态。")
 
+        for mode_box in (self.headerModeBox, self.skipModeBox, self.delimModeBox, self.encModeBox):
+            mode_box.setMinimumWidth(93)
+
         self.headerCheck = QCheckBox("第一行为表头")
         self.headerCheck.setChecked(True)
 

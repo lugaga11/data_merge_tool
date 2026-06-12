@@ -2,9 +2,9 @@
 
 ## 项目定位
 
-这是一个 Windows 桌面端实验数据合并工具，当前开发版本为 `v2.2.1`。应用基于 PySide6，主要面向本地数据文件读取、预览、列选择、合并、导出，以及与 Origin/OriginPro 的自动化联动。
+这是一个 Windows 桌面端实验数据合并工具，当前开发版本为 `v2.2.2`。应用基于 PySide6，主要面向本地数据文件读取、预览、列选择、合并、导出，以及与 Origin/OriginPro 的自动化联动。
 
-根目录的 `数据合并工具_v2.2.1.py` 是当前版本的本地启动入口；实际业务代码在 `src/data_merge_tool/`。发布包通过 PyInstaller 生成，输出默认放在 `artifacts/`，该目录不纳入版本控制。
+根目录的 `数据合并工具_v2.2.2.py` 是当前版本的本地启动入口；实际业务代码在 `src/data_merge_tool/`。发布包通过 PyInstaller 生成，输出默认放在 `artifacts/`，该目录不纳入版本控制。
 
 ## 目录和模块
 
@@ -27,7 +27,7 @@
 优先使用用户机器上的 `my_base` 环境进行验证：
 
 ```powershell
-& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' .\数据合并工具_v2.2.1.py
+& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' .\数据合并工具_v2.2.2.py
 ```
 
 轻量语法检查可以用：
@@ -55,12 +55,12 @@ git status --short
 
 ## 打包
 
-当前打包锚点是 `packaging/build_v2.2.spec`，入口会匹配根目录的 `*_v2.2.1.py`。使用 PyInstaller 时建议继续沿用 `my_base`：
+当前打包锚点是 `packaging/build_v2.2.spec`，入口会匹配根目录的 `*_v2.2.2.py`。使用 PyInstaller 时建议继续沿用 `my_base`：
 
 ```powershell
 & 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
-  --workpath .\artifacts\build\v2.2.1 `
+  --workpath .\artifacts\build\v2.2.2 `
   .\packaging\build_v2.2.spec
 ```
 

@@ -172,7 +172,7 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid #7fb0f1;
 }
 QComboBox {
-    padding: 3px 31px 3px 8px;
+    padding: 3px 6px 3px 8px;
 }
 QSpinBox, QDoubleSpinBox {
     padding: 3px 2px 3px 8px;
