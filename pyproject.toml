@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "data-merge-tool"
-version = "2.2.2"
+version = "2.3.0"
 description = "A PySide6 desktop tool for reading, previewing, merging, and exporting experimental data files."
 readme = "README.md"
 requires-python = ">=3.10"

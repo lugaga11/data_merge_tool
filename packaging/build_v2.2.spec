@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(SPECPATH).resolve().parents[0]
-ENTRY = next(ROOT.glob("*_v2.2.2.py"))
+ENTRY = next(ROOT.glob("*_v2.3.0.py"))
 ASSET = ROOT / "src" / "data_merge_tool" / "assets" / "ui_checkmark.svg"
 
 
@@ -13,7 +13,17 @@ a = Analysis(
     pathex=[str(ROOT), str(ROOT / "src")],
     binaries=[],
     datas=[(str(ASSET), "assets")],
-    hiddenimports=["xlrd", "openpyxl", "matplotlib.backends.backend_qtagg", "originpro", "OriginExt"],
+    hiddenimports=[
+        "xlrd",
+        "openpyxl",
+        "matplotlib.backends.backend_qtagg",
+        "data_merge_tool.origin_worker",
+        "data_merge_tool.origin_client",
+        "data_merge_tool.origin_protocol",
+        "data_merge_tool.origin_automation",
+        "originpro",
+        "OriginExt",
+    ],
     hookspath=[],
     hooksconfig={"matplotlib": {"backends": ["QtAgg"]}},
     runtime_hooks=[],
@@ -47,7 +57,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="数据合并工具v2.2.2",
+    name="数据合并工具v2.3.0",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

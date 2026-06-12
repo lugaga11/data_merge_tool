@@ -71,7 +71,7 @@ from .data_io import (
 from .data_types import MergeOptions, OriginImportData, ReadDetection, ReadOptions
 from .errors import UserVisibleError
 from .models import DataFrameModel
-from .origin import import_dataframe_to_origin
+from .origin_client import OriginWorkerClient
 from .origin_panel import PANEL_STYLE as ORIGIN_PANEL_STYLE
 from .origin_panel import OriginPanelWidget
 from .widgets import (
@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         self._read_detection: Optional[ReadDetection] = None
         self._active_tasks: List[DataTask] = []
         self._data_generation = 0
+        self.origin_worker = OriginWorkerClient()
         self.originPanel: OriginPanelWidget | None = None
 
         self.setFont(QFont("Microsoft YaHei UI", 10))
@@ -122,7 +123,7 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_data_merge_view())
-        self.originPanel = OriginPanelWidget()
+        self.originPanel = OriginPanelWidget(self.origin_worker)
         self.stack.addWidget(self.originPanel)
         root_layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
@@ -948,6 +949,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.originPanel is not None:
             self.originPanel.detach()
+        self.origin_worker.shutdown()
         super().closeEvent(event)
 
     def start_data_task(
@@ -1126,7 +1128,7 @@ class MainWindow(QMainWindow):
         workbook_label = origin_data.workbook_label
 
         def do_import() -> str:
-            return import_dataframe_to_origin(df, axis_spec, long_names, comments, workbook_label)
+            return self.origin_worker.import_dataframe(df, axis_spec, long_names, comments, workbook_label)
 
         def finish_import(result: object) -> None:
             page_name = str(result)

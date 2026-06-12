@@ -2,17 +2,20 @@
 
 ## 项目定位
 
-这是一个 Windows 桌面端实验数据合并工具，当前开发版本为 `v2.2.2`。应用基于 PySide6，主要面向本地数据文件读取、预览、列选择、合并、导出，以及与 Origin/OriginPro 的自动化联动。
+这是一个 Windows 桌面端实验数据合并工具，当前开发版本为 `v2.3.0`。应用基于 PySide6，主要面向本地数据文件读取、预览、列选择、合并、导出，以及与 Origin/OriginPro 的自动化联动。
 
-根目录的 `数据合并工具_v2.2.2.py` 是当前版本的本地启动入口；实际业务代码在 `src/data_merge_tool/`。发布包通过 PyInstaller 生成，输出默认放在 `artifacts/`，该目录不纳入版本控制。
+根目录的 `数据合并工具_v2.3.0.py` 是当前版本的本地启动入口；实际业务代码在 `src/data_merge_tool/`。发布包通过 PyInstaller 生成，输出默认放在 `artifacts/`，该目录不纳入版本控制。
 
 ## 目录和模块
 
 - `src/data_merge_tool/main.py`：应用入口，创建 `QApplication` 和 `MainWindow`。
 - `src/data_merge_tool/main_window.py`：主窗口、数据合并面板、预览、导出、导入 Origin 入口。
 - `src/data_merge_tool/data_io.py`：数据文件识别、编码/分隔符/表头探测、读取、列校验、合并表构建。
-- `src/data_merge_tool/origin.py`：把合并结果导入 Origin 工作簿。
 - `src/data_merge_tool/origin_panel.py`：Origin 绘图和格式控制面板。
+- `src/data_merge_tool/origin_client.py`：GUI 主进程侧 Origin worker 客户端。
+- `src/data_merge_tool/origin_worker.py`：Origin 自动化子进程入口。
+- `src/data_merge_tool/origin_automation.py`：worker 专用 Origin 自动化实现。
+- `src/data_merge_tool/origin_protocol.py`：主进程和 worker 共享的数据结构与序列化。
 - `src/data_merge_tool/widgets.py`：通用控件、按钮工厂、文件队列拖拽控件、后台任务线程。
 - `src/data_merge_tool/constants.py`：应用版本、支持的文件类型、Qt 常量别名、全局样式。
 - `src/data_merge_tool/models.py`：表格预览模型。
@@ -27,13 +30,13 @@
 优先使用用户机器上的 `my_base` 环境进行验证：
 
 ```powershell
-& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' .\数据合并工具_v2.2.2.py
+& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' .\数据合并工具_v2.3.0.py
 ```
 
 轻量语法检查可以用：
 
 ```powershell
-& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -B -c "import ast; from pathlib import Path; [ast.parse(Path(p).read_text(encoding='utf-8'), filename=p) for p in ['src/data_merge_tool/main_window.py','src/data_merge_tool/origin_panel.py','src/data_merge_tool/widgets.py','src/data_merge_tool/data_io.py','src/data_merge_tool/origin.py']]"
+& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -B -c "import ast; from pathlib import Path; files=['src/data_merge_tool/main_window.py','src/data_merge_tool/origin_panel.py','src/data_merge_tool/widgets.py','src/data_merge_tool/data_io.py','src/data_merge_tool/origin_client.py','src/data_merge_tool/origin_worker.py','src/data_merge_tool/origin_protocol.py','src/data_merge_tool/origin_automation.py']; [ast.parse(Path(p).read_text(encoding='utf-8'), filename=p) for p in files]"
 ```
 
 离屏 GUI 构造检查可以用：
@@ -41,7 +44,7 @@
 ```powershell
 $env:QT_QPA_PLATFORM='offscreen'
 $env:PYTHONPATH=(Resolve-Path -LiteralPath 'src').Path
-& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -B -c "from PySide6.QtWidgets import QApplication; from data_merge_tool.origin_panel import OriginPanelWidget; app=QApplication([]); w=OriginPanelWidget(); print(type(w).__name__, w.adapter._connected)"
+& 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -B -c "from PySide6.QtWidgets import QApplication; from data_merge_tool.main_window import MainWindow; app=QApplication([]); w=MainWindow(); print(type(w).__name__, w.origin_worker._process is None, w.originPanel.origin_client is w.origin_worker); w.close()"
 ```
 
 提交前至少跑：
@@ -55,12 +58,12 @@ git status --short
 
 ## 打包
 
-当前打包锚点是 `packaging/build_v2.2.spec`，入口会匹配根目录的 `*_v2.2.2.py`。使用 PyInstaller 时建议继续沿用 `my_base`：
+当前打包锚点是 `packaging/build_v2.2.spec`，入口会匹配根目录的 `*_v2.3.0.py`。使用 PyInstaller 时建议继续沿用 `my_base`：
 
 ```powershell
 & 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
-  --workpath .\artifacts\build\v2.2.2 `
+  --workpath .\artifacts\build\v2.3.0 `
   .\packaging\build_v2.2.spec
 ```
 
@@ -77,11 +80,11 @@ git status --short
 
 ### Origin 自动化
 
-- `originpro`/`OriginExt` 可能影响 Windows COM/OLE 状态，进而影响原生文件对话框和文件拖拽。
-- `OriginAdapter.connect()` 不应在每次操作前后反复 `detach()`。
-- 常规绘图、读取样式、应用格式、撤销、导出等操作不应在 `finally` 中自动 detach。
-- `OriginAdapter.detach(force=False)` 默认不做事；只有明确关闭或路径需要时才使用 `force=True`。
-- 如果继续排查卡死、禁止拖拽、文件对话框异常，优先检查 Origin 自动化调用链，而不是先加防御性 UI fallback。
+- `originpro`/`OriginExt` 可能影响 Windows COM/OLE 状态，不能在 PySide6 GUI 主进程里 import 或调用。
+- 主进程通过 `OriginWorkerClient` 与常驻 worker 子进程通信；worker 入口是 `data_merge_tool.origin_worker`，打包后同一个 exe 用 `--origin-worker` 进入 worker 模式。
+- 真实 Origin 自动化逻辑集中在 `src/data_merge_tool/origin_automation.py`；只有这个 worker 专用模块可以 import `originpro`。
+- 绘图、读取样式、应用格式、撤销、导出、导入 Origin 都应通过 worker 命令执行。worker 卡死或退出时，主进程应 kill/restart worker，而不是恢复全局频繁 `detach()`。
+- 如果继续排查卡死、禁止拖拽、文件对话框异常，优先检查 worker 边界和 IPC 调用链，不要加文件对话框 fallback。
 
 ### Preset 持久化
 

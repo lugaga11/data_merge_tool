@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
 import json
-import math
 import os
 from pathlib import Path
-import re
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import (
@@ -31,7 +28,17 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from .origin_client import OriginWorkerClient
+from .origin_protocol import (
+    ApplyResult,
+    FigureStylePatch,
+    GraphInfo,
+    OriginWorkerError,
+    PatchTarget,
+    StyleSnapshot,
+)
 from .widgets import (
+    DataTask,
     NoWheelComboBox,
     NoWheelDoubleSpinBox,
     NoWheelSpinBox,
@@ -341,871 +348,16 @@ QStatusBar {
 }
 """
 
-@dataclass(frozen=True)
-class LayerInfo:
-    index: int
-    name: str
-    plot_count: int
-    plot_names: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class GraphInfo:
-    name: str
-    long_name: str
-    layers: list[LayerInfo]
-
-
-@dataclass
-class PatchTarget:
-    layer_scope: str = "all"
-    layer_indices: list[int] = field(default_factory=list)
-
-
-@dataclass
-class FigureStylePatch:
-    target: PatchTarget
-    enabled_paths: set[str]
-    page: dict[str, Any] = field(default_factory=dict)
-    layer: dict[str, Any] = field(default_factory=dict)
-    text: dict[str, Any] = field(default_factory=dict)
-    plot: dict[str, Any] = field(default_factory=dict)
-    axis: dict[str, Any] = field(default_factory=dict)
-    legend: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ApplyResult:
-    target_name: str
-    layer_indices: list[int]
-    applied: list[str]
-    failed: list[str]
-
-
-@dataclass
-class StyleSnapshot:
-    target_name: str
-    layer_indices: list[int]
-    enabled_paths: set[str]
-    styles: dict[int, dict[str, Any]]
-
 PRESETS: dict[str, dict[str, Any]] = {}
 
 
-class OriginPanelError(RuntimeError):
-    """User-facing Origin automation error."""
-
-
-class OriginAdapter:
-    def __init__(self) -> None:
-        self._op: Any | None = None
-        self._connected = False
-
-    def _origin(self) -> Any:
-        if self._op is not None:
-            return self._op
-        try:
-            import originpro as op
-        except ImportError as exc:
-            raise OriginPanelError("当前 Python 环境缺少 originpro。") from exc
-        self._op = op
-        return op
-
-    def connect(self) -> Any:
-        op = self._origin()
-        if self._connected:
-            return op
-        try:
-            op.attach()
-        except Exception:
-            try:
-                op.set_show(True)
-            except Exception as exc:
-                raise OriginPanelError(
-                    "无法连接或启动 Origin。请确认 Origin/OriginPro 已安装且许可可用。"
-                ) from exc
-        self._connected = True
-        return op
-
-    def active_context(self, op: Any | None = None) -> str:
-        origin: Any = self._origin() if op is None else op
-        pieces: list[str] = []
-        try:
-            project = str(origin.po.GetProjectName()).strip()
-            if project:
-                pieces.append(f"项目：{project}")
-        except Exception:
-            pass
-        try:
-            active_page = origin.po.ActivePage
-            page_name = str(active_page.GetName()).strip() if active_page is not None else ""
-            if page_name:
-                pieces.append(f"活动窗口：{page_name}")
-        except Exception:
-            pass
-        return "；".join(pieces)
-
-    def _active_window_error(self, op: Any, expected: str) -> OriginPanelError:
-        context = self.active_context(op)
-        suffix = f"当前连接到：{context}。" if context else "未能取得当前连接信息。"
-        return OriginPanelError(f"当前 Origin 活动窗口不是 {expected}。{suffix}请先切到目标 Origin 文件中的对应窗口，再重试。")
-
-    def detach(self, force: bool = False) -> None:
-        if self._op is None:
-            return
-        if not force:
-            return
-        try:
-            self._op.detach()
-        finally:
-            self._op = None
-            self._connected = False
-
-    def scan_active_graph(self) -> GraphInfo:
-        op = self.connect()
-        graph = op.find_graph()
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-
-        layers: list[LayerInfo] = []
-        for zero_index in range(len(graph)):
-            layer = graph[zero_index]
-            plots = layer.plot_list()
-            plot_names = [getattr(plot, "name", f"Plot {i + 1}") for i, plot in enumerate(plots)]
-            layers.append(
-                LayerInfo(
-                    index=zero_index + 1,
-                    name=getattr(layer, "name", f"Layer {zero_index + 1}"),
-                    plot_count=len(plots),
-                    plot_names=plot_names,
-                )
-            )
-
-        return GraphInfo(
-            name=getattr(graph, "name", "Active Graph"),
-            long_name=getattr(graph, "lname", ""),
-            layers=layers,
-        )
-
-    def read_active_layer_style(self, layer_index: int = 1) -> dict[str, Any]:
-        op = self.connect()
-        graph = op.find_graph()
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-        if layer_index < 1 or layer_index > len(graph):
-            raise OriginPanelError(f"当前图没有 Layer {layer_index}。")
-        return self._read_graph_layer_style(op, graph, layer_index)
-
-    def read_style_snapshot(self, patch: FigureStylePatch) -> StyleSnapshot:
-        op = self.connect()
-        graph = op.find_graph()
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-        layer_indices = self._resolve_layers(graph, patch)
-        if not layer_indices:
-            raise OriginPanelError("没有可读取的目标图层。")
-        return StyleSnapshot(
-            target_name=getattr(graph, "name", "Active Graph"),
-            layer_indices=layer_indices,
-            enabled_paths=set(patch.enabled_paths),
-            styles={index: self._read_graph_layer_style(op, graph, index) for index in layer_indices},
-        )
-
-    def restore_style_snapshot(self, snapshot: StyleSnapshot) -> ApplyResult:
-        op = self.connect()
-        graph = op.find_graph()
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-
-        applied: list[str] = []
-        failed: list[str] = []
-
-        def run(base_path: str, path: str, callback: Any) -> None:
-            if base_path not in snapshot.enabled_paths:
-                return
-            try:
-                callback()
-                applied.append(path)
-            except Exception as exc:
-                failed.append(f"{path}: {exc}")
-
-        first_style = next(iter(snapshot.styles.values()), None)
-        if first_style is not None:
-            page = first_style.get("page", {})
-            if isinstance(page, dict):
-                run("page.size_in", "page.size_in", lambda: self._apply_page_size(graph, self._require_page_size(page)))
-                run("page.anti_alias", "page.anti_alias", lambda: self._apply_page_antialias(graph, page))
-
-        for layer_index in snapshot.layer_indices:
-            if layer_index < 1 or layer_index > len(graph):
-                failed.append(f"layer[{layer_index}]: current graph does not contain this layer")
-                continue
-            style = snapshot.styles.get(layer_index, {})
-            layer = graph[layer_index - 1]
-            layer_values = style.get("layer", {})
-            plot_values = style.get("plot", {})
-            text_values = style.get("text", {})
-            axis_values = style.get("axis", {})
-            legend_values = style.get("legend", {})
-            if isinstance(layer_values, dict):
-                run(
-                    "layer.geometry_in",
-                    f"layer.geometry_in[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_geometry(layer, self._require_layer_geometry(values)),
-                )
-                run(
-                    "layer.frame",
-                    f"layer.frame[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_frame(layer, values),
-                )
-                run(
-                    "layer.line_width_pt",
-                    f"layer.line_width_pt[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_line_width(layer, self._require_layer_line_width(values)),
-                )
-                run(
-                    "layer.scale_elements",
-                    f"layer.scale_elements[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_scale_elements(layer, self._require_layer_scale(values)),
-                )
-            if isinstance(plot_values, dict):
-                run(
-                    "plot.line_width_pt",
-                    f"plot.line_width_pt[{layer_index}]",
-                    lambda layer=layer, values=plot_values: self._apply_plot_line_width(layer, self._require_plot_line_width(values)),
-                )
-                run(
-                    "plot.symbol_size_pt",
-                    f"plot.symbol_size_pt[{layer_index}]",
-                    lambda layer=layer, values=plot_values: self._apply_plot_symbol_size(layer, self._require_plot_symbol_size(values)),
-                )
-            if isinstance(text_values, dict):
-                restore_text = {
-                    "x_title": text_values.get("x_title_raw", text_values.get("x_title", "")),
-                    "y_title": text_values.get("y_title_raw", text_values.get("y_title", "")),
-                    "legend_text": text_values.get("legend_text_raw", text_values.get("legend_text", "")),
-                    "title_font_size_pt": text_values.get("title_font_size_pt"),
-                    "tick_font_size_pt": text_values.get("tick_font_size_pt"),
-                    "legend_font_size_pt": text_values.get("legend_font_size_pt"),
-                }
-                run(
-                    "text.x_title",
-                    f"text.x_title[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_title(layer, "x", values),
-                )
-                run(
-                    "text.y_title",
-                    f"text.y_title[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_title(layer, "y", values),
-                )
-                run(
-                    "text.legend_text",
-                    f"text.legend_text[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_legend_text(op, layer, values),
-                )
-                run(
-                    "text.title_size_pt",
-                    f"text.title_size_pt[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_title_size(layer, self._require_text_size(values, "title_font_size_pt")),
-                )
-                run(
-                    "text.tick_size_pt",
-                    f"text.tick_size_pt[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_tick_size(layer, self._require_text_size(values, "tick_font_size_pt")),
-                )
-                run(
-                    "text.legend_size_pt",
-                    f"text.legend_size_pt[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_legend_size(layer, self._require_text_size(values, "legend_font_size_pt")),
-                )
-            if isinstance(axis_values, dict):
-                run(
-                    "axis.x_scale",
-                    f"axis.x_scale[{layer_index}]",
-                    lambda layer=layer, values=axis_values: self._apply_axis_scale(layer, "x", self._require_axis_scale(values, "x")),
-                )
-                run(
-                    "axis.y_scale",
-                    f"axis.y_scale[{layer_index}]",
-                    lambda layer=layer, values=axis_values: self._apply_axis_scale(layer, "y", self._require_axis_scale(values, "y")),
-                )
-                run(
-                    "axis.grid",
-                    f"axis.grid[{layer_index}]",
-                    lambda layer=layer, values=axis_values: self._apply_axis_grid(layer, values),
-                )
-            if isinstance(legend_values, dict):
-                restore_legend = {
-                    "visibility": "show" if legend_values.get("visibility") else "hide",
-                    "frame": bool(legend_values.get("frame")),
-                    "x": legend_values.get("x"),
-                    "y": legend_values.get("y"),
-                }
-                run(
-                    "legend.visibility",
-                    f"legend.visibility[{layer_index}]",
-                    lambda layer=layer, values=restore_legend: self._apply_legend_visibility(layer, values),
-                )
-                run(
-                    "legend.frame",
-                    f"legend.frame[{layer_index}]",
-                    lambda layer=layer, values=restore_legend: self._apply_legend_frame(layer, values),
-                )
-                run(
-                    "legend.position",
-                    f"legend.position[{layer_index}]",
-                    lambda layer=layer, values=restore_legend: self._restore_legend_xy(layer, values),
-                )
-
-        return ApplyResult(
-            target_name=getattr(graph, "name", "Active Graph"),
-            layer_indices=snapshot.layer_indices,
-            applied=applied,
-            failed=failed,
-        )
-
-    def _read_graph_layer_style(self, op: Any, graph: Any, layer_index: int) -> dict[str, Any]:
-        layer = graph[layer_index - 1]
-        try:
-            layer.activate()
-        except Exception:
-            pass
-        legend = layer.label("legend") or layer.label("Legend")
-        plots = layer.plot_list()
-        first_plot = plots[0] if plots else None
-        x_title = layer.axis("x").title or ""
-        y_title = layer.axis("y").title or ""
-        legend_text = self._read_legend_raw_text(op, legend)
-
-        return {
-            "page": {
-                "width_in": self._try_page_in(graph, "width", "resx"),
-                "height_in": self._try_page_in(graph, "height", "resy"),
-                "anti_alias": self._try_get_int(graph, "aa"),
-            },
-            "layer": self._read_layer_style_in_inches(layer),
-            "text": {
-                "x_title": self._resolve_origin_text(op, x_title),
-                "y_title": self._resolve_origin_text(op, y_title),
-                "legend_text": self._resolve_origin_text(op, legend_text),
-                "x_title_raw": x_title,
-                "y_title_raw": y_title,
-                "legend_text_raw": legend_text,
-                "title_font_size_pt": self._try_label_float(layer, "xb", "fsize"),
-                "tick_font_size_pt": self._try_get_float(layer, "x.label.pt"),
-                "legend_font_size_pt": self._try_label_float(layer, "legend", "fsize"),
-            },
-            "axis": {
-                "x_scale": self._scale_name(self._try_axis_scale(layer, "x")),
-                "y_scale": self._scale_name(self._try_axis_scale(layer, "y")),
-                "show_grid": self._try_get_int(layer, "x.showGrids"),
-            },
-            "plot": {
-                "line_width_pt": self._try_plot_line_width(layer, first_plot),
-                "symbol_size_pt": self._try_plot_attr(first_plot, "symbol_size"),
-            },
-            "legend": {
-                "visibility": self._try_get_int(layer, "legend.show"),
-                "frame": self._try_get_int(layer, "legend.background"),
-                "x": self._try_label_float(layer, "legend", "x"),
-                "y": self._try_label_float(layer, "legend", "y"),
-            },
-        }
-
-    @staticmethod
-    def _require_number(values: dict[str, Any], key: str) -> float:
-        value = values.get(key)
-        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-            raise OriginPanelError(f"cannot restore unreadable value: {key}")
-        return float(value)
-
-    def _require_page_size(self, page: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(page)
-        restored["width_in"] = self._require_number(page, "width_in")
-        restored["height_in"] = self._require_number(page, "height_in")
-        return restored
-
-    def _require_layer_geometry(self, layer_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(layer_values)
-        for key in ("left_in", "top_in", "width_in", "height_in"):
-            restored[key] = self._require_number(layer_values, key)
-        return restored
-
-    def _require_layer_line_width(self, layer_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(layer_values)
-        restored["line_width_pt"] = self._require_number(layer_values, "line_width_pt")
-        return restored
-
-    def _require_layer_scale(self, layer_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(layer_values)
-        if restored.get("scale_fixed", False):
-            restored["scale_factor"] = self._require_number(layer_values, "scale_factor")
-        else:
-            restored["scale_factor"] = 1.0
-        return restored
-
-    def _require_plot_line_width(self, plot_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(plot_values)
-        restored["line_width_pt"] = self._require_number(plot_values, "line_width_pt")
-        return restored
-
-    def _require_plot_symbol_size(self, plot_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(plot_values)
-        restored["symbol_size_pt"] = self._require_number(plot_values, "symbol_size_pt")
-        return restored
-
-    def _require_text_size(self, text_values: dict[str, Any], key: str) -> dict[str, Any]:
-        restored = dict(text_values)
-        restored[key] = self._require_number(text_values, key)
-        return restored
-
-    def _require_axis_scale(self, axis_values: dict[str, Any], axis_name: str) -> dict[str, Any]:
-        key = f"{axis_name}_scale"
-        value = axis_values.get(key)
-        if value not in {"linear", "log10"}:
-            raise OriginPanelError(f"cannot restore unreadable value: {key}")
-        return {key: value}
-
-    def _restore_legend_xy(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        x = self._require_number(legend_values, "x")
-        y = self._require_number(legend_values, "y")
-        layer.lt_exec(f"legend.x={x:.8g};legend.y={y:.8g};")
-
-    def _read_layer_style_in_inches(self, layer: Any) -> dict[str, Any]:
-        original_unit = self._try_get_int(layer, "unit")
-        try:
-            layer.lt_exec("layer.unit=2;")
-            return {
-                "left_in": self._try_get_float(layer, "left"),
-                "top_in": self._try_get_float(layer, "top"),
-                "width_in": self._try_get_float(layer, "width"),
-                "height_in": self._try_get_float(layer, "height"),
-                "line_width_pt": self._try_get_float(layer, "x.thickness"),
-                "frame": self._read_layer_frame(layer),
-                "scale_fixed": bool(self._try_get_int(layer, "fixed")),
-                "scale_factor": self._try_get_float(layer, "factor"),
-            }
-        finally:
-            if original_unit is not None:
-                try:
-                    layer.lt_exec(f"layer.unit={original_unit};")
-                except Exception:
-                    pass
-
-    def _read_layer_frame(self, layer: Any) -> dict[str, bool]:
-        x_axes = self._try_get_int(layer, "x.showAxes")
-        y_axes = self._try_get_int(layer, "y.showAxes")
-        return {
-            "bottom": True if x_axes is None else bool(x_axes & 1),
-            "top": True if x_axes is None else bool(x_axes & 2),
-            "left": True if y_axes is None else bool(y_axes & 1),
-            "right": True if y_axes is None else bool(y_axes & 2),
-        }
-
-    def _read_legend_raw_text(self, op: Any, legend: Any | None) -> str:
-        fallback = str(getattr(legend, "text", "") or "") if legend is not None else ""
-        for expression in ("legend.text$", "Legend.text$"):
-            value = self._evaluate_origin_string_expression(op, expression)
-            if "\\l(" in value or "\\L(" in value or "%(" in value:
-                return value
-        return fallback
-
-    def _resolve_origin_text(self, op: Any, text: str) -> str:
-        if not text:
-            return text
-        resolved = text
-        for token in sorted(set(re.findall(r"%\([^()]+\)", text)), key=len, reverse=True):
-            value = self._evaluate_origin_text_token(op, token)
-            if value and value != token:
-                resolved = resolved.replace(token, value)
-        return self._clean_origin_text_markup(resolved)
-
-    @staticmethod
-    def _evaluate_origin_text_token(op: Any, token: str) -> str:
-        return OriginAdapter._evaluate_origin_string_expression(op, token)
-
-    @staticmethod
-    def _evaluate_origin_string_expression(op: Any, expression: str) -> str:
-        try:
-            var_name = "__opanel_text"
-            op.lt_exec(f"{var_name}$={expression};")
-            return str(op.get_lt_str(var_name)).strip()
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _clean_origin_text_markup(text: str) -> str:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
-        text = re.sub(r"\\[lL]\([^)]*\)", "", text)
-        text = re.sub(r"\\[ib+\-]\((.*?)\)", r"\1", text)
-        return "\n".join(line.strip() for line in text.splitlines() if line.strip()).strip()
-
-    @staticmethod
-    def _try_get_float(obj: Any, prop: str) -> float | None:
-        try:
-            return float(obj.get_float(prop))
-        except Exception:
-            return None
-
-    @staticmethod
-    def _try_get_int(obj: Any, prop: str) -> int | None:
-        try:
-            return int(obj.get_int(prop))
-        except Exception:
-            return None
-
-    def _try_page_in(self, graph: Any, size_prop: str, resolution_prop: str) -> float | None:
-        size = self._try_get_float(graph, size_prop)
-        resolution = self._try_get_float(graph, resolution_prop)
-        if size is None or not resolution:
-            return None
-        return size / resolution
-
-    @staticmethod
-    def _try_plot_line_width(layer: Any, plot: Any) -> float | None:
-        if plot is None:
-            return None
-        try:
-            return float(layer.get_float(f"plot{plot.index() + 1}.line.width"))
-        except Exception:
-            try:
-                return float(plot.get_float("line.width"))
-            except Exception:
-                return None
-
-    @staticmethod
-    def _try_axis_scale(layer: Any, axis_name: str) -> int | None:
-        try:
-            return int(layer.axis(axis_name).scale)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _try_label_float(layer: Any, name: str, prop: str) -> float | None:
-        try:
-            label = layer.label(name) or layer.label(name.capitalize())
-            if label is None:
-                return None
-            return float(label.get_float(prop))
-        except Exception:
-            return None
-
-    @staticmethod
-    def _try_plot_attr(plot: Any, attr: str) -> float | int | None:
-        if plot is None:
-            return None
-        try:
-            return getattr(plot, attr)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _scale_name(value: int | None) -> str | None:
-        if value == 1:
-            return "linear"
-        if value == 2:
-            return "log10"
-        return None
-
-    def plot_active_sheet(self, plot_kind: str) -> str:
-        op = self.connect()
-        worksheet = op.find_sheet()
-        if worksheet is None:
-            raise self._active_window_error(op, "worksheet")
-
-        plot_id = {"线图": 200, "散点图": 201, "线+符号": 202}.get(plot_kind, 200)
-        try:
-            if not self._has_worksheet_selection(op):
-                self._select_entire_worksheet(worksheet)
-            worksheet.lt_exec(f"worksheet -p {plot_id};")
-        except Exception as exc:
-            raise OriginPanelError("Origin 未能根据当前 worksheet 选区绘图。请确认已选中要绘制的数据列或数据范围。") from exc
-        return f"已调用 Origin 当前选区绘图：{plot_kind}。"
-
-    @staticmethod
-    def _has_worksheet_selection(op: Any) -> bool:
-        c1 = op.lt_int("SELC1")
-        c2 = op.lt_int("SELC2")
-        r1 = op.lt_int("SELR1")
-        r2 = op.lt_int("SELR2")
-        return any(value > 0 for value in (c1, c2, r1, r2))
-
-    @staticmethod
-    def _select_entire_worksheet(worksheet: Any) -> None:
-        column_count = int(getattr(worksheet, "cols", 0))
-        if column_count <= 0:
-            raise OriginPanelError("当前 worksheet 没有可绘制的列。")
-        worksheet.lt_exec(f"worksheet -s 1 0 {column_count} 0;")
-
-    def apply_style_patch(self, patch: FigureStylePatch) -> ApplyResult:
-        op = self.connect()
-        graph = op.find_graph()
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-
-        layer_indices = self._resolve_layers(graph, patch)
-        if not layer_indices:
-            raise OriginPanelError("没有可应用的目标图层。")
-
-        applied: list[str] = []
-        failed: list[str] = []
-
-        def run(path: str, callback: Any) -> None:
-            base_path = path.split("[", 1)[0]
-            if base_path not in patch.enabled_paths:
-                return
-            try:
-                callback()
-                applied.append(path)
-            except Exception as exc:
-                failed.append(f"{path}: {exc}")
-
-        run("page.size_in", lambda: self._apply_page_size(graph, patch.page))
-        run("page.anti_alias", lambda: self._apply_page_antialias(graph, patch.page))
-
-        for layer_index in layer_indices:
-            layer = graph[layer_index - 1]
-            run(
-                f"layer.geometry_in[{layer_index}]",
-                lambda layer=layer: self._apply_layer_geometry(layer, patch.layer),
-            )
-            run(
-                f"layer.frame[{layer_index}]",
-                lambda layer=layer: self._apply_layer_frame(layer, patch.layer),
-            )
-            run(
-                f"layer.line_width_pt[{layer_index}]",
-                lambda layer=layer: self._apply_layer_line_width(layer, patch.layer),
-            )
-            run(
-                f"layer.scale_elements[{layer_index}]",
-                lambda layer=layer: self._apply_layer_scale_elements(layer, patch.layer),
-            )
-            run(
-                f"plot.line_width_pt[{layer_index}]",
-                lambda layer=layer: self._apply_plot_line_width(layer, patch.plot),
-            )
-            run(
-                f"plot.symbol_size_pt[{layer_index}]",
-                lambda layer=layer: self._apply_plot_symbol_size(layer, patch.plot),
-            )
-            run(
-                f"text.x_title[{layer_index}]",
-                lambda layer=layer: self._apply_axis_title(layer, "x", patch.text),
-            )
-            run(
-                f"text.y_title[{layer_index}]",
-                lambda layer=layer: self._apply_axis_title(layer, "y", patch.text),
-            )
-            run(
-                f"text.legend_text[{layer_index}]",
-                lambda layer=layer: self._apply_legend_text(op, layer, patch.text),
-            )
-            run(
-                f"text.title_size_pt[{layer_index}]",
-                lambda layer=layer: self._apply_axis_title_size(layer, patch.text),
-            )
-            run(
-                f"text.tick_size_pt[{layer_index}]",
-                lambda layer=layer: self._apply_axis_tick_size(layer, patch.text),
-            )
-            run(
-                f"text.legend_size_pt[{layer_index}]",
-                lambda layer=layer: self._apply_legend_size(layer, patch.text),
-            )
-            run(
-                f"axis.x_scale[{layer_index}]",
-                lambda layer=layer: self._apply_axis_scale(layer, "x", patch.axis),
-            )
-            run(
-                f"axis.y_scale[{layer_index}]",
-                lambda layer=layer: self._apply_axis_scale(layer, "y", patch.axis),
-            )
-            run(
-                f"axis.grid[{layer_index}]",
-                lambda layer=layer: self._apply_axis_grid(layer, patch.axis),
-            )
-            run(
-                f"legend.visibility[{layer_index}]",
-                lambda layer=layer: self._apply_legend_visibility(layer, patch.legend),
-            )
-            run(
-                f"legend.frame[{layer_index}]",
-                lambda layer=layer: self._apply_legend_frame(layer, patch.legend),
-            )
-            run(
-                f"legend.position[{layer_index}]",
-                lambda layer=layer: self._apply_legend_position(layer, patch.legend),
-            )
-
-        return ApplyResult(
-            target_name=getattr(graph, "name", "Active Graph"),
-            layer_indices=layer_indices,
-            applied=applied,
-            failed=failed,
-        )
-
-    def export_active_graph(self, directory: Path, formats: list[str], width_px: int) -> list[Path]:
-        op = self.connect()
-        graph = op.find_graph()
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-        directory.mkdir(parents=True, exist_ok=True)
-        graph_name = getattr(graph, "name", "graph")
-        exported: list[Path] = []
-        for fmt in formats:
-            path = directory / f"{graph_name}.{fmt}"
-            result = graph.save_fig(str(path), type=fmt, replace=True, width=width_px)
-            if result:
-                exported.append(Path(result))
-        if not exported:
-            raise OriginPanelError("Origin 没有返回成功导出的文件。")
-        return exported
-
-    def _resolve_layers(self, graph: Any, patch: FigureStylePatch) -> list[int]:
-        count = len(graph)
-        if patch.target.layer_scope == "all":
-            return list(range(1, count + 1))
-        indices = [idx for idx in patch.target.layer_indices if 1 <= idx <= count]
-        return sorted(set(indices))
-
-    def _apply_page_size(self, graph: Any, page: dict[str, Any]) -> None:
-        width_in = float(page["width_in"])
-        height_in = float(page["height_in"])
-        graph.lt_exec(
-            "page.kar=0;"
-            f"page.width=page.resx*{width_in:.8g};"
-            f"page.height=page.resy*{height_in:.8g};"
-        )
-
-    def _apply_page_antialias(self, graph: Any, page: dict[str, Any]) -> None:
-        graph.lt_exec(f"page.aa={1 if page.get('anti_alias', False) else 0};")
-
-    def _apply_layer_geometry(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        left = float(layer_values["left_in"])
-        top = float(layer_values["top_in"])
-        width = float(layer_values["width_in"])
-        height = float(layer_values["height_in"])
-        layer.lt_exec(
-            "layer.unit=2;"
-            f"layer.left={left:.8g};"
-            f"layer.top={top:.8g};"
-            f"layer.width={width:.8g};"
-            f"layer.height={height:.8g};"
-        )
-
-    def _apply_layer_scale_elements(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        if layer_values.get("scale_fixed", False):
-            factor = float(layer_values.get("scale_factor", 1.0))
-            layer.lt_exec(f"layer.fixed=1;layer.factor={factor:.8g};")
-        else:
-            layer.lt_exec("layer.fixed=0;")
-
-    def _apply_layer_frame(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        frame = layer_values["frame"]
-        x_axes = (1 if frame.get("bottom", True) else 0) + (2 if frame.get("top", True) else 0)
-        y_axes = (1 if frame.get("left", True) else 0) + (2 if frame.get("right", True) else 0)
-        layer.lt_exec(f"layer.x.showAxes={x_axes};layer.y.showAxes={y_axes};")
-
-    def _apply_layer_line_width(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        width = float(layer_values["line_width_pt"])
-        layer.lt_exec(
-            f"layer.x.thickness={width:.8g};"
-            f"layer.x2.thickness={width:.8g};"
-            f"layer.y.thickness={width:.8g};"
-            f"layer.y2.thickness={width:.8g};"
-            f"layer.x.tickthickness={width:.8g};"
-            f"layer.x2.tickthickness={width:.8g};"
-            f"layer.y.tickthickness={width:.8g};"
-            f"layer.y2.tickthickness={width:.8g};"
-        )
-
-    def _apply_plot_line_width(self, layer: Any, plot_values: dict[str, Any]) -> None:
-        width = float(plot_values["line_width_pt"])
-        for plot in layer.plot_list():
-            plot.set_cmd(f"-wp {width:.8g}")
-
-    def _apply_plot_symbol_size(self, layer: Any, plot_values: dict[str, Any]) -> None:
-        size = float(plot_values["symbol_size_pt"])
-        for plot in layer.plot_list():
-            plot.symbol_size = size
-
-    def _apply_axis_title(self, layer: Any, axis_name: str, text_values: dict[str, Any]) -> None:
-        title = text_values[f"{axis_name}_title"]
-        layer.axis(axis_name).title = str(title)
-
-    def _apply_legend_text(self, op: Any, layer: Any, text_values: dict[str, Any]) -> None:
-        legend = layer.label("legend") or layer.label("Legend")
-        if legend is None:
-            layer.lt_exec("legend;")
-            legend = layer.label("legend") or layer.label("Legend")
-        if legend is None:
-            raise OriginPanelError("当前图层没有可编辑的 legend 文本对象。")
-        legend_text = str(text_values.get("legend_text", "")).strip()
-        if not legend_text:
-            return
-        legend.text = legend_text
-
-    def _apply_axis_title_size(self, layer: Any, text_values: dict[str, Any]) -> None:
-        size = float(text_values["title_font_size_pt"])
-        layer.lt_exec(
-            f"xb.fsize={size:.8g};"
-            f"xt.fsize={size:.8g};"
-            f"yl.fsize={size:.8g};"
-            f"yr.fsize={size:.8g};"
-        )
-
-    def _apply_axis_tick_size(self, layer: Any, text_values: dict[str, Any]) -> None:
-        size = float(text_values["tick_font_size_pt"])
-        layer.lt_exec(
-            f"layer.x.label.pt={size:.8g};"
-            f"layer.y.label.pt={size:.8g};"
-        )
-
-    def _apply_axis_scale(self, layer: Any, axis_name: str, axis_values: dict[str, Any]) -> None:
-        scale = axis_values.get(f"{axis_name}_scale", "keep")
-        if scale == "keep":
-            return
-        layer.axis(axis_name).scale = "log10" if scale == "log10" else "linear"
-
-    def _apply_axis_grid(self, layer: Any, axis_values: dict[str, Any]) -> None:
-        value = 1 if axis_values.get("show_grid", False) else 0
-        layer.lt_exec(f"layer.x.showGrids={value};layer.y.showGrids={value};")
-
-    def _apply_legend_visibility(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        visibility = legend_values.get("visibility", "keep")
-        if visibility == "keep":
-            return
-        layer.lt_exec(f"legend.show={1 if visibility == 'show' else 0};")
-
-    def _apply_legend_frame(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        layer.lt_exec(f"legend.background={1 if legend_values.get('frame', False) else 0};")
-
-    def _apply_legend_size(self, layer: Any, text_values: dict[str, Any]) -> None:
-        size = float(text_values["legend_font_size_pt"])
-        layer.lt_exec(f"legend.fsize={size:.8g};")
-
-    def _apply_legend_position(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        position = legend_values.get("position", "keep")
-        if position == "keep":
-            return
-        if position == "upper_left":
-            layer.lt_exec("legend.x=layer.x.from+legend.dx/2;legend.y=layer.y.to-legend.dy/2;")
-        elif position == "upper_right":
-            layer.lt_exec("legend.x=layer.x.to-legend.dx/2;legend.y=layer.y.to-legend.dy/2;")
-        elif position == "lower_left":
-            layer.lt_exec("legend.x=layer.x.from+legend.dx/2;legend.y=layer.y.from+legend.dy/2;")
-        elif position == "lower_right":
-            layer.lt_exec("legend.x=layer.x.to-legend.dx/2;legend.y=layer.y.from+legend.dy/2;")
-        elif position == "best":
-            layer.lt_exec("legend.smartpos=1;")
-
 class OriginPanelWidget(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, origin_client: OriginWorkerClient | None = None) -> None:
         super().__init__()
 
-        self.adapter = OriginAdapter()
+        self.origin_client = origin_client or OriginWorkerClient()
+        self._owns_origin_client = origin_client is None
+        self._active_tasks: list[DataTask] = []
         self.current_graph: GraphInfo | None = None
         self.path_checks: dict[str, QCheckBox] = {}
         self.last_text_editor: QLineEdit | None = None
@@ -1805,28 +957,69 @@ class OriginPanelWidget(QWidget):
         self._add_wide_setting(grid, 1, "legend.position", "位置", self._cluster(self.legendPositionCombo))
         return box
 
-    def plot_active_sheet(self) -> None:
-        try:
-            message = self.adapter.plot_active_sheet(self.plotKindCombo.currentText())
-        except Exception as exc:
-            self.show_error("绘图失败", exc)
+    def start_origin_task(
+        self,
+        message: str,
+        work: Callable[[], object],
+        on_success: Callable[[object], None],
+        error_title: str,
+    ) -> None:
+        if self._active_tasks:
+            self.set_status("Origin 自动化任务仍在执行，请稍后。", 4000)
             return
+        task = DataTask(work, on_success, error_title, parent=self)
+        self._active_tasks.append(task)
+        self.setEnabled(False)
         self.set_status(message)
-        self.refresh_graph(silent=True)
+        task.completed.connect(lambda result, error, finished_task=task: self.finish_origin_task(finished_task, result, error))
+        task.start()
 
-    def refresh_graph(self, silent: bool = False) -> None:
-        try:
-            info = self.adapter.scan_active_graph()
-        except Exception as exc:
-            if not silent:
-                self.show_error("读取图结构失败", exc)
-            self.current_graph = None
-            self.graphInfoLabel.setText("读取失败，未读取到当前图。")
-            self._set_widget_state(self.graphInfoLabel, "error")
-            self.layerCombo.clear()
-            self.update_enabled_summary()
+    def finish_origin_task(self, task: DataTask, result: object, error: object) -> None:
+        if task in self._active_tasks:
+            self._active_tasks.remove(task)
+        self.setEnabled(not self._active_tasks)
+        error_title = task.error_title
+        on_success = task.on_success
+        task.deleteLater()
+        if error is not None:
+            self.show_error(error_title, error if isinstance(error, Exception) else RuntimeError(str(error)))
             return
-        self.update_graph_info(info, update_status=True)
+        try:
+            on_success(result)
+        except Exception as exc:
+            self.show_error(error_title, exc)
+
+    def plot_active_sheet(self) -> None:
+        plot_kind = self.plotKindCombo.currentText()
+
+        def finish(result: object) -> None:
+            if not isinstance(result, tuple) or len(result) != 2:
+                raise TypeError("Origin worker returned an invalid plot result.")
+            message, graph = result
+            if not isinstance(graph, GraphInfo):
+                raise TypeError("Origin worker 没有返回有效图信息。")
+            self.set_status(str(message))
+            self.update_graph_info(graph, update_status=False)
+
+        self.start_origin_task(
+            "正在通过 Origin worker 绘制当前选区...",
+            lambda: self.origin_client.plot_active_sheet(plot_kind),
+            finish,
+            "绘图失败",
+        )
+
+    def refresh_graph(self) -> None:
+        def finish(result: object) -> None:
+            if not isinstance(result, GraphInfo):
+                raise TypeError("Origin worker 没有返回有效图信息。")
+            self.update_graph_info(result, update_status=True)
+
+        self.start_origin_task(
+            "正在通过 Origin worker 读取当前图...",
+            self.origin_client.scan_active_graph,
+            finish,
+            "读取图结构失败",
+        )
 
     def update_graph_info(self, info: GraphInfo, update_status: bool) -> None:
         previous_index = max(self.layerCombo.currentIndex(), 0)
@@ -2160,13 +1353,19 @@ class OriginPanelWidget(QWidget):
     def read_current_style(self) -> None:
         _scope, indices = self.selected_layer_indices()
         layer_index = indices[0] if indices else 1
-        try:
-            style = self.adapter.read_active_layer_style(layer_index)
-        except Exception as exc:
-            self.show_error("读取设置失败", exc)
-            return
-        self.apply_readback_style(style)
-        self.set_status(f"已读取 Layer {layer_index} 的可回读设置；未自动启用任何格式项。")
+
+        def finish(result: object) -> None:
+            if not isinstance(result, dict):
+                raise TypeError("Origin worker 没有返回有效样式。")
+            self.apply_readback_style(result)
+            self.set_status(f"已读取 Layer {layer_index} 的可回读设置；未自动启用任何格式项。")
+
+        self.start_origin_task(
+            "正在通过 Origin worker 读取样式...",
+            lambda: self.origin_client.read_active_layer_style(layer_index),
+            finish,
+            "读取设置失败",
+        )
 
     def apply_readback_style(self, style: dict[str, object]) -> None:
         page = style.get("page", {})
@@ -2303,38 +1502,57 @@ class OriginPanelWidget(QWidget):
                 QMessageBox.information(self, "没有启用项", "请至少启用一个要应用的格式项。")
                 self.set_status("没有启用项。")
                 return
-            snapshot = self.adapter.read_style_snapshot(patch)
-            result = self.adapter.apply_style_patch(patch)
-            self.last_apply_snapshot = snapshot
         except Exception as exc:
             self.show_error("应用失败", exc)
             return
-        message = (
-            f"已应用 {len(result.applied)} 项到 {result.target_name} / Layer {result.layer_indices}，"
-            f"失败 {len(result.failed)} 项。"
+
+        def finish(result: object) -> None:
+            if not isinstance(result, tuple) or len(result) != 2:
+                raise TypeError("Origin worker returned an invalid apply result.")
+            snapshot, apply_result = result
+            if not isinstance(snapshot, StyleSnapshot) or not isinstance(apply_result, ApplyResult):
+                raise TypeError("Origin worker 没有返回有效应用结果。")
+            self.last_apply_snapshot = snapshot
+            message = (
+                f"已应用 {len(apply_result.applied)} 项到 {apply_result.target_name} / Layer {apply_result.layer_indices}，"
+                f"失败 {len(apply_result.failed)} 项。"
+            )
+            self.set_status(message)
+            if apply_result.failed:
+                QMessageBox.warning(self, "部分格式应用失败", "\n".join(apply_result.failed))
+
+        self.start_origin_task(
+            "正在通过 Origin worker 应用格式...",
+            lambda: self.origin_client.apply_patch(patch),
+            finish,
+            "应用失败",
         )
-        self.set_status(message)
-        if result.failed:
-            QMessageBox.warning(self, "部分格式应用失败", "\n".join(result.failed))
 
     def undo_last_apply(self) -> None:
         if self.last_apply_snapshot is None:
             QMessageBox.information(self, "没有可撤销状态", "还没有保存最近一次应用前状态。")
             self.set_status("没有可撤销状态。")
             return
-        try:
-            result = self.adapter.restore_style_snapshot(self.last_apply_snapshot)
-        except Exception as exc:
-            self.show_error("撤销失败", exc)
-            return
-        self.last_apply_snapshot = None
-        message = (
-            f"已撤销 {len(result.applied)} 项到 {result.target_name} / Layer {result.layer_indices}；"
-            f"失败 {len(result.failed)} 项。"
+        snapshot = self.last_apply_snapshot
+
+        def finish(result: object) -> None:
+            if not isinstance(result, ApplyResult):
+                raise TypeError("Origin worker 没有返回有效撤销结果。")
+            self.last_apply_snapshot = None
+            message = (
+                f"已撤销 {len(result.applied)} 项到 {result.target_name} / Layer {result.layer_indices}；"
+                f"失败 {len(result.failed)} 项。"
+            )
+            self.set_status(message)
+            if result.failed:
+                QMessageBox.warning(self, "部分撤销失败", "\n".join(result.failed))
+
+        self.start_origin_task(
+            "正在通过 Origin worker 撤销上次应用...",
+            lambda: self.origin_client.restore_style_snapshot(snapshot),
+            finish,
+            "撤销失败",
         )
-        self.set_status(message)
-        if result.failed:
-            QMessageBox.warning(self, "部分撤销失败", "\n".join(result.failed))
 
     def choose_export_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "选择导出目录", self.exportDirEdit.text())
@@ -2361,16 +1579,20 @@ class OriginPanelWidget(QWidget):
             return
         directory = Path(self.exportDirEdit.text().strip() or str(DEFAULT_EXPORT_DIR))
         self.exportDirEdit.setText(str(directory))
-        try:
-            files = self.adapter.export_active_graph(
-                directory,
-                formats,
-                self.exportWidthSpin.value(),
-            )
-        except Exception as exc:
-            self.show_error("导出失败", exc)
-            return
-        self.set_status("已导出：" + "; ".join(str(path) for path in files))
+        width_px = self.exportWidthSpin.value()
+
+        def finish(result: object) -> None:
+            if not isinstance(result, list):
+                raise TypeError("Origin worker 没有返回有效导出路径。")
+            files = [Path(path) for path in result]
+            self.set_status("已导出：" + "; ".join(str(path) for path in files))
+
+        self.start_origin_task(
+            "正在通过 Origin worker 导出当前图...",
+            lambda: self.origin_client.export_active_graph(directory, formats, width_px),
+            finish,
+            "导出失败",
+        )
 
     def set_status(self, message: str, timeout_ms: int = 6000) -> None:
         window = self.window()
@@ -2382,7 +1604,7 @@ class OriginPanelWidget(QWidget):
 
     def show_error(self, title: str, exc: Exception) -> None:
         message = str(exc)
-        if isinstance(exc, OriginPanelError):
+        if isinstance(exc, OriginWorkerError):
             detail = message
         else:
             detail = f"{type(exc).__name__}: {message}"
@@ -2390,4 +1612,5 @@ class OriginPanelWidget(QWidget):
         QMessageBox.critical(self, title, detail)
 
     def detach(self) -> None:
-        self.adapter.detach(force=True)
+        if self._owns_origin_client:
+            self.origin_client.shutdown()

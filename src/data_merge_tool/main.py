@@ -9,6 +9,11 @@ from .main_window import MainWindow
 
 
 def main() -> int:
+    if "--origin-worker" in sys.argv:
+        from .origin_worker import main as origin_worker_main
+
+        return origin_worker_main()
+
     pd.set_option("mode.copy_on_write", True)
 
     app = QApplication(sys.argv)

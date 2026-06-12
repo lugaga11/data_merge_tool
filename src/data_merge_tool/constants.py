@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
 
 APP_TITLE = "数据合并工具"
-APP_VERSION = "v2.2.2"
+APP_VERSION = "v2.3.0"
 TEXT_DATA_EXTENSIONS = {
     ".csv",
     ".txt",
