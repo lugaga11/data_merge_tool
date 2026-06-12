@@ -760,10 +760,6 @@ def _build_merged_table(paths: Sequence[str], options: MergeOptions) -> MergedTa
     return MergedTable(dataframe=merged, long_names=long_names, comments=comments)
 
 
-def build_merged_dataframe(paths: Sequence[str], options: MergeOptions) -> pd.DataFrame:
-    return _build_merged_table(paths, options).dataframe
-
-
 def build_origin_import_table(paths: Sequence[str], options: MergeOptions) -> OriginImportData:
     workbook_label = derive_source_group_label(paths)
     if options.keep_single_x:
@@ -916,7 +912,3 @@ def preflight_merge_columns(paths: Sequence[str], options: MergeOptions) -> None
 def build_prechecked_merged_table(paths: Sequence[str], options: MergeOptions) -> MergedTable:
     preflight_merge_columns(paths, options)
     return _build_merged_table(paths, options)
-
-
-def build_prechecked_merged_dataframe(paths: Sequence[str], options: MergeOptions) -> pd.DataFrame:
-    return build_prechecked_merged_table(paths, options).dataframe

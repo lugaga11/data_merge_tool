@@ -16,9 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -269,21 +267,6 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
     def textFromValue(self, value: float) -> str:
         text = f"{value:.{self.decimals()}f}".rstrip("0").rstrip(".")
         return text if text and text != "-0" else "0"
-
-
-def choose_directory(parent: QWidget, title: str, initial_dir: str = "") -> str | None:
-    directory = QFileDialog.getExistingDirectory(parent, title, initial_dir)
-    return directory or None
-
-
-def choose_open_files(parent: QWidget, title: str, file_filter: str, initial_dir: str = "") -> list[str]:
-    paths, _ = QFileDialog.getOpenFileNames(parent, title, initial_dir, file_filter)
-    return paths
-
-
-def choose_save_file(parent: QWidget, title: str, initial_path: str, file_filter: str) -> tuple[str | None, str]:
-    path, selected_filter = QFileDialog.getSaveFileName(parent, title, initial_path, file_filter)
-    return path or None, selected_filter
 
 
 def make_button(

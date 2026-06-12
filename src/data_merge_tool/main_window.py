@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -20,7 +21,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -79,8 +79,6 @@ from .widgets import (
     DropFileList,
     NoWheelComboBox,
     NoWheelSpinBox,
-    choose_open_files,
-    choose_save_file,
     make_button,
 )
 
@@ -188,15 +186,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.fileList, 1)
 
         row1 = QHBoxLayout()
-        row1.addWidget(self._button("添加文件", self.choose_files, "primary"), 1)
-        row1.addWidget(self._button("全选", self.select_all_files), 1)
-        row1.addWidget(self._button("取消全选", self.clear_file_checks), 1)
+        row1.addWidget(make_button("添加文件", self.choose_files, "primary"), 1)
+        row1.addWidget(make_button("全选", self.select_all_files), 1)
+        row1.addWidget(make_button("取消全选", self.clear_file_checks), 1)
         layout.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.addWidget(self._button("删除选中", self.delete_selected_files))
-        row2.addWidget(self._button("自然排序", self.sort_files_naturally))
-        row2.addWidget(self._button("清空", self.clear_files, "danger"))
+        row2.addWidget(make_button("删除选中", self.delete_selected_files))
+        row2.addWidget(make_button("自然排序", self.sort_files_naturally))
+        row2.addWidget(make_button("清空", self.clear_files, "danger"))
         layout.addLayout(row2)
 
         row4 = QHBoxLayout()
@@ -316,8 +314,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.yColumnList, 3, 0, 1, 2)
         y_button_row = QHBoxLayout()
         y_button_row.setSpacing(8)
-        y_button_row.addWidget(self._button("全选 Y", self.select_all_y_columns), 1)
-        y_button_row.addWidget(self._button("清空 Y", self.clear_y_columns), 1)
+        y_button_row.addWidget(make_button("全选 Y", self.select_all_y_columns), 1)
+        y_button_row.addWidget(make_button("清空 Y", self.clear_y_columns), 1)
         layout.addLayout(y_button_row, 4, 0, 1, 2)
         layout.addWidget(QLabel("文件标签"), 5, 0)
         layout.addWidget(self.labelModeBox, 5, 1)
@@ -331,12 +329,12 @@ class MainWindow(QMainWindow):
         action_layout = QVBoxLayout(action_frame)
         action_layout.setContentsMargins(10, 10, 10, 10)
         action_layout.setSpacing(6)
-        self.previewButton = self._button("预览合并结果", self.preview_merge, "primary")
+        self.previewButton = make_button("预览合并结果", self.preview_merge, "primary")
         action_layout.addWidget(self.previewButton)
         action_row = QHBoxLayout()
-        self.copyButton = self._button("复制到剪贴板", self.copy_to_clipboard)
-        self.exportButton = self._button("导出文件", self.export_merged, "primary")
-        self.originButton = self._button("导入 Origin", self.import_to_origin, "primary")
+        self.copyButton = make_button("复制到剪贴板", self.copy_to_clipboard)
+        self.exportButton = make_button("导出文件", self.export_merged, "primary")
+        self.originButton = make_button("导入 Origin", self.import_to_origin, "primary")
         action_row.addWidget(self.copyButton)
         action_row.addWidget(self.exportButton)
         action_row.addWidget(self.originButton)
@@ -383,7 +381,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.plotLogYCheck)
         controls.addWidget(self.plotLegendCheck)
         controls.addStretch(1)
-        controls.addWidget(self._button("绘制当前结果", self.plot_data, "primary"))
+        controls.addWidget(make_button("绘制当前结果", self.plot_data, "primary"))
         layout.addLayout(controls)
 
         if MATPLOTLIB_AVAILABLE and Figure is not None and FigureCanvas is not None:
@@ -436,9 +434,6 @@ class MainWindow(QMainWindow):
             self.outputTable = table
             table.setModel(self.outputModel)
         return frame
-
-    def _button(self, text: str, slot: Callable[[], None], role: str = "") -> QPushButton:
-        return make_button(text, slot, role)
 
     def _connect_signals(self) -> None:
         self.fileList.files_dropped.connect(self.add_paths)
@@ -770,7 +765,7 @@ class MainWindow(QMainWindow):
         return paths, options
 
     def choose_files(self) -> None:
-        paths = choose_open_files(self, "选择数据文件", SUPPORTED_FILES)
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择数据文件", "", SUPPORTED_FILES)
         self.add_paths(paths)
 
     def add_paths(self, paths: Sequence[str], sort_input: bool = True) -> None:
@@ -1086,7 +1081,7 @@ class MainWindow(QMainWindow):
         self.ensure_import_data("导出", self.export_ready_dataframe)
 
     def export_ready_dataframe(self, origin_data: OriginImportData) -> None:
-        filename, selected_filter = choose_save_file(
+        filename, selected_filter = QFileDialog.getSaveFileName(
             self,
             "导出合并结果",
             "merged.xlsx",

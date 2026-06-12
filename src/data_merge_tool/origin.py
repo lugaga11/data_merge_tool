@@ -50,30 +50,24 @@ def import_dataframe_to_origin(
         ) from exc
 
     try:
-        try:
-            connect_origin(op)
-            worksheet = op.new_sheet("w", lname=safe_origin_long_name(workbook_label))
-            if worksheet is None:
-                raise UserVisibleError("Origin 已连接，但没有成功创建新的工作簿。")
-            worksheet = cast(Any, worksheet)
-            worksheet.from_df(df)
-            if axis_spec:
-                worksheet.cols_axis(axis_spec)
-            if long_names is not None:
-                worksheet.set_labels(list(long_names), "L")
-            if comments is not None:
-                worksheet.set_labels(list(comments), "C")
-            worksheet.activate()
+        connect_origin(op)
+        worksheet = op.new_sheet("w", lname=safe_origin_long_name(workbook_label))
+        if worksheet is None:
+            raise UserVisibleError("Origin 已连接，但没有成功创建新的工作簿。")
+        worksheet = cast(Any, worksheet)
+        worksheet.from_df(df)
+        if axis_spec:
+            worksheet.cols_axis(axis_spec)
+        if long_names is not None:
+            worksheet.set_labels(list(long_names), "L")
+        if comments is not None:
+            worksheet.set_labels(list(comments), "C")
+        worksheet.activate()
 
-            book = worksheet.get_book()
-            book_name = getattr(book, "name", "")
-            sheet_name = getattr(worksheet, "name", "")
-            return f"{book_name}/{sheet_name}" if book_name and sheet_name else "Origin 工作簿"
-        finally:
-            try:
-                op.detach()
-            except Exception:
-                pass
+        book = worksheet.get_book()
+        book_name = getattr(book, "name", "")
+        sheet_name = getattr(worksheet, "name", "")
+        return f"{book_name}/{sheet_name}" if book_name and sheet_name else "Origin 工作簿"
     except UserVisibleError:
         raise
     except Exception as exc:

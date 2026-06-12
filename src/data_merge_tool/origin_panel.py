@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
@@ -8,10 +7,9 @@ import math
 import os
 from pathlib import Path
 import re
-from typing import Any, Optional
+from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -25,7 +23,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
@@ -38,23 +35,12 @@ from .widgets import (
     NoWheelComboBox,
     NoWheelDoubleSpinBox,
     NoWheelSpinBox,
-    choose_directory,
     make_button,
     make_panel,
     make_section_title,
     make_titled_group,
 )
 
-UI_FONT_CANDIDATES = (
-    "Microsoft YaHei UI",
-    "Microsoft YaHei",
-    "SimSun",
-    "NSimSun",
-    "SimHei",
-    "Noto Sans CJK SC",
-    "Source Han Sans SC",
-    "Arial",
-)
 DEFAULT_FLOAT_MIN = -1_000_000_000.0
 DEFAULT_FLOAT_MAX = 1_000_000_000.0
 EXPORT_WIDTH_MAX = 1_000_000
@@ -67,7 +53,6 @@ def _app_data_dir() -> Path:
     return Path.home() / ".data_merge_tool"
 
 
-LEGACY_USER_PRESETS_PATH = Path(__file__).with_name("user_presets.json")
 APP_DATA_DIR = _app_data_dir()
 USER_PRESETS_PATH = APP_DATA_DIR / "user_presets.json"
 DEFAULT_EXPORT_DIR = APP_DATA_DIR / "origin_exports"
@@ -411,13 +396,10 @@ class OriginPanelError(RuntimeError):
     """User-facing Origin automation error."""
 
 
-def _lt_quote(text: str) -> str:
-    return str(text).replace("\\", "\\\\").replace('"', '\\"')
-
-
 class OriginAdapter:
     def __init__(self) -> None:
         self._op: Any | None = None
+        self._connected = False
 
     def _origin(self) -> Any:
         if self._op is not None:
@@ -430,8 +412,9 @@ class OriginAdapter:
         return op
 
     def connect(self) -> Any:
-        self.detach()
         op = self._origin()
+        if self._connected:
+            return op
         try:
             op.attach()
         except Exception:
@@ -441,6 +424,7 @@ class OriginAdapter:
                 raise OriginPanelError(
                     "无法连接或启动 Origin。请确认 Origin/OriginPro 已安装且许可可用。"
                 ) from exc
+        self._connected = True
         return op
 
     def active_context(self, op: Any | None = None) -> str:
@@ -469,11 +453,13 @@ class OriginAdapter:
     def detach(self, force: bool = False) -> None:
         if self._op is None:
             return
+        if not force:
+            return
         try:
             self._op.detach()
-        except Exception:
-            pass
-        self._op = None
+        finally:
+            self._op = None
+            self._connected = False
 
     def scan_active_graph(self) -> GraphInfo:
         op = self.connect()
@@ -1224,7 +1210,18 @@ class OriginPanelWidget(QWidget):
         self.path_checks: dict[str, QCheckBox] = {}
         self.last_text_editor: QLineEdit | None = None
         self.last_text_selection: dict[QLineEdit, tuple[int, int, str]] = {}
-        self.user_presets: dict[str, dict[str, Any]] = self.load_user_presets()
+        self.user_presets: dict[str, dict[str, Any]] = {}
+        if USER_PRESETS_PATH.exists():
+            preset_data = json.loads(USER_PRESETS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(preset_data, dict):
+                raise ValueError("用户 preset 文件格式错误，应为 JSON 对象。")
+            presets = preset_data.get("presets", preset_data)
+            if not isinstance(presets, dict):
+                raise ValueError("用户 preset 文件格式错误，presets 应为对象。")
+            invalid_names = [str(name) for name, preset in presets.items() if not isinstance(preset, dict)]
+            if invalid_names:
+                raise ValueError(f"用户 preset 条目格式错误：{', '.join(invalid_names)}")
+            self.user_presets = {str(name): preset for name, preset in presets.items()}
         self.last_apply_snapshot: StyleSnapshot | None = None
 
         self._build_ui()
@@ -1233,16 +1230,6 @@ class OriginPanelWidget(QWidget):
             self.load_preset_values(self.presetCombo.currentText())
         self.clear_enabled_checks(show_status=False)
         self.set_status("Origin 绘图面板已就绪；需要时再连接 Origin。")
-
-    @staticmethod
-    def _button(
-        text: str,
-        slot: Callable[[], None],
-        keep_text_focus: bool = False,
-        role: str = "",
-        width: int | None = None,
-    ):
-        return make_button(text, slot, role, keep_text_focus=keep_text_focus, width=width)
 
     def _build_ui(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1328,13 +1315,13 @@ class OriginPanelWidget(QWidget):
         self.plotKindCombo.addItems(["线图", "散点图", "线+符号"])
         form.addRow("图形类型", self.plotKindCombo)
         layout.addLayout(form)
-        layout.addWidget(self._button("绘制当前选区", self.plot_active_sheet, role="primary"))
+        layout.addWidget(make_button("绘制当前选区", self.plot_active_sheet, role="primary"))
         return card
 
     def _build_graph_card(self) -> QWidget:
         card, layout = self._side_card("当前图", "同步图层后再读取样式，目标会更准确。")
-        sync_button = self._button("同步图层", lambda: self.refresh_graph(), role="secondary")
-        read_button = self._button("读取样式", self.read_current_style, role="quiet")
+        sync_button = make_button("同步图层", lambda: self.refresh_graph(), role="secondary")
+        read_button = make_button("读取样式", self.read_current_style, role="quiet")
         sync_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         read_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         graph_actions = QWidget()
@@ -1377,7 +1364,7 @@ class OriginPanelWidget(QWidget):
         self.presetCombo = NoWheelComboBox()
         form.addRow("风格", self.presetCombo)
         layout.addLayout(form)
-        layout.addWidget(self._button("载入预设", self.load_selected_preset, role="secondary"))
+        layout.addWidget(make_button("载入预设", self.load_selected_preset, role="secondary"))
         preset_actions = QWidget()
         preset_actions.setObjectName("InlineCluster")
         action_grid = QGridLayout(preset_actions)
@@ -1385,10 +1372,10 @@ class OriginPanelWidget(QWidget):
         action_grid.setHorizontalSpacing(10)
         action_grid.setVerticalSpacing(8)
         buttons = [
-            self._button("保存当前", self.save_current_preset, role="quiet"),
-            self._button("删除", self.delete_selected_preset, role="quiet"),
-            self._button("导入 JSON", self.import_presets_json, role="quiet"),
-            self._button("导出 JSON", self.export_selected_preset_json, role="quiet"),
+            make_button("保存当前", self.save_current_preset, role="quiet"),
+            make_button("删除", self.delete_selected_preset, role="quiet"),
+            make_button("导入 JSON", self.import_presets_json, role="quiet"),
+            make_button("导出 JSON", self.export_selected_preset_json, role="quiet"),
         ]
         for index, button in enumerate(buttons):
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1405,7 +1392,7 @@ class OriginPanelWidget(QWidget):
         layout.addWidget(
             self._side_row(
                 self.exportDirEdit,
-                self._button("选择", self.choose_export_dir, role="quiet"),
+                make_button("选择", self.choose_export_dir, role="quiet"),
                 expand=self.exportDirEdit,
             )
         )
@@ -1434,7 +1421,7 @@ class OriginPanelWidget(QWidget):
                 self._label("宽度"),
                 self.exportWidthSpin,
                 self._label("px"),
-                self._button("导出", self.export_active_graph, role="quiet"),
+                make_button("导出", self.export_active_graph, role="quiet"),
             )
         )
         return card
@@ -1445,10 +1432,10 @@ class OriginPanelWidget(QWidget):
         action_layout = QVBoxLayout(action_box)
         action_layout.setContentsMargins(16, 12, 16, 14)
         action_layout.setSpacing(8)
-        apply_button = self._button("应用启用项", self.apply_patch, role="primary")
+        apply_button = make_button("应用启用项", self.apply_patch, role="primary")
         apply_button.setMinimumHeight(40)
         action_layout.addWidget(apply_button)
-        action_layout.addWidget(self._button("撤销上次应用", self.undo_last_apply, role="quiet"))
+        action_layout.addWidget(make_button("撤销上次应用", self.undo_last_apply, role="quiet"))
         self.actionContextLabel = QLabel("目标：Layer 1 · 已启用 0 项")
         self.actionContextLabel.setObjectName("ActionContext")
         self.actionContextLabel.setWordWrap(True)
@@ -1500,8 +1487,8 @@ class OriginPanelWidget(QWidget):
         title_layout.addWidget(self.formatSummaryLabel)
 
         header_layout.addWidget(title_block, 1)
-        header_layout.addWidget(self._button("全选启用项", self.select_all_enabled_checks, role="secondary"))
-        header_layout.addWidget(self._button("清空", lambda: self.clear_enabled_checks(), role="quiet"))
+        header_layout.addWidget(make_button("全选启用项", self.select_all_enabled_checks, role="secondary"))
+        header_layout.addWidget(make_button("清空", lambda: self.clear_enabled_checks(), role="quiet"))
         return header
 
     def _format_grid(self, parent: QWidget) -> QGridLayout:
@@ -1767,10 +1754,10 @@ class OriginPanelWidget(QWidget):
         )
         format_row = self._cluster(
             self._label("选中文本"),
-            self._button("加粗", self.insert_bold, keep_text_focus=True, role="quiet"),
-            self._button("斜体", self.insert_italic, keep_text_focus=True, role="quiet"),
-            self._button("上标", self.insert_superscript, keep_text_focus=True, role="quiet"),
-            self._button("下标", self.insert_subscript, keep_text_focus=True, role="quiet"),
+            make_button("加粗", self.insert_bold, keep_text_focus=True, role="quiet"),
+            make_button("斜体", self.insert_italic, keep_text_focus=True, role="quiet"),
+            make_button("上标", self.insert_superscript, keep_text_focus=True, role="quiet"),
+            make_button("下标", self.insert_subscript, keep_text_focus=True, role="quiet"),
         )
         grid.addWidget(self._label("文本格式"), 5, 0)
         grid.addWidget(format_row, 5, 1)
@@ -1824,8 +1811,6 @@ class OriginPanelWidget(QWidget):
         except Exception as exc:
             self.show_error("绘图失败", exc)
             return
-        finally:
-            self.adapter.detach()
         self.set_status(message)
         self.refresh_graph(silent=True)
 
@@ -1841,8 +1826,6 @@ class OriginPanelWidget(QWidget):
             self.layerCombo.clear()
             self.update_enabled_summary()
             return
-        finally:
-            self.adapter.detach()
         self.update_graph_info(info, update_status=True)
 
     def update_graph_info(self, info: GraphInfo, update_status: bool) -> None:
@@ -1866,20 +1849,6 @@ class OriginPanelWidget(QWidget):
         self.load_preset_values(name)
         self.set_status(f"已载入预设：{name}。")
 
-    @staticmethod
-    def load_user_presets() -> dict[str, dict[str, Any]]:
-        source = USER_PRESETS_PATH if USER_PRESETS_PATH.exists() else LEGACY_USER_PRESETS_PATH
-        if not source.exists():
-            return {}
-        try:
-            data = json.loads(source.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        presets = data.get("presets", data) if isinstance(data, dict) else {}
-        if not isinstance(presets, dict):
-            return {}
-        return {str(name): preset for name, preset in presets.items() if isinstance(preset, dict)}
-
     def write_user_presets(self) -> None:
         USER_PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
         USER_PRESETS_PATH.write_text(
@@ -1893,8 +1862,6 @@ class OriginPanelWidget(QWidget):
         return combined
 
     def refresh_preset_combo(self, selected: str | None = None) -> None:
-        if not hasattr(self, "presetCombo"):
-            return
         current = selected or self.presetCombo.currentText()
         self.presetCombo.clear()
         self.presetCombo.addItems(list(self.all_presets().keys()))
@@ -2198,8 +2165,6 @@ class OriginPanelWidget(QWidget):
         except Exception as exc:
             self.show_error("读取设置失败", exc)
             return
-        finally:
-            self.adapter.detach()
         self.apply_readback_style(style)
         self.set_status(f"已读取 Layer {layer_index} 的可回读设置；未自动启用任何格式项。")
 
@@ -2344,8 +2309,6 @@ class OriginPanelWidget(QWidget):
         except Exception as exc:
             self.show_error("应用失败", exc)
             return
-        finally:
-            self.adapter.detach()
         message = (
             f"已应用 {len(result.applied)} 项到 {result.target_name} / Layer {result.layer_indices}，"
             f"失败 {len(result.failed)} 项。"
@@ -2364,8 +2327,6 @@ class OriginPanelWidget(QWidget):
         except Exception as exc:
             self.show_error("撤销失败", exc)
             return
-        finally:
-            self.adapter.detach()
         self.last_apply_snapshot = None
         message = (
             f"已撤销 {len(result.applied)} 项到 {result.target_name} / Layer {result.layer_indices}；"
@@ -2376,7 +2337,7 @@ class OriginPanelWidget(QWidget):
             QMessageBox.warning(self, "部分撤销失败", "\n".join(result.failed))
 
     def choose_export_dir(self) -> None:
-        directory = choose_directory(self, "选择导出目录", self.exportDirEdit.text())
+        directory = QFileDialog.getExistingDirectory(self, "选择导出目录", self.exportDirEdit.text())
         if directory:
             self.exportDirEdit.setText(directory)
 
@@ -2409,8 +2370,6 @@ class OriginPanelWidget(QWidget):
         except Exception as exc:
             self.show_error("导出失败", exc)
             return
-        finally:
-            self.adapter.detach()
         self.set_status("已导出：" + "; ".join(str(path) for path in files))
 
     def set_status(self, message: str, timeout_ms: int = 6000) -> None:
