@@ -989,6 +989,9 @@ class OriginPanelWidget(QWidget):
         except Exception as exc:
             self.show_error(error_title, exc)
 
+    def has_active_origin_task(self) -> bool:
+        return bool(self._active_tasks)
+
     def plot_active_sheet(self) -> None:
         plot_kind = self.plotKindCombo.currentText()
 
@@ -1034,6 +1037,14 @@ class OriginPanelWidget(QWidget):
         self.update_enabled_summary()
         if update_status:
             self.set_status(f"{info.name}：{len(info.layers)} 个图层，当前目标：{self.target_description()}")
+
+    def clear_origin_connection_state(self) -> None:
+        self.current_graph = None
+        self.last_apply_snapshot = None
+        self.layerCombo.clear()
+        self.graphInfoLabel.setText("未读取到当前图。")
+        self._set_widget_state(self.graphInfoLabel, "empty")
+        self.update_enabled_summary()
 
     def load_selected_preset(self) -> None:
         name = self.presetCombo.currentText()

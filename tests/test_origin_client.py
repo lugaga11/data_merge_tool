@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
 
 from data_merge_tool.origin_client import OriginWorkerClient
 from data_merge_tool.origin_protocol import OriginWorkerError
+from data_merge_tool.origin_worker import dispatch
 
 
 FAKE_WORKER = r'''
@@ -33,6 +34,27 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="strict")
 
 line = sys.stdin.readline()
+if mode == "release_then_ping":
+    while line:
+        request = json.loads(line)
+        request_id = request.get("id")
+        command = request.get("command")
+        if command == "release_origin":
+            response = {"id": request_id, "ok": True, "result": {"status": "released"}}
+        elif command == "ping":
+            response = {"id": request_id, "ok": True, "result": {"status": "ok"}}
+        elif command == "shutdown":
+            response = {"id": request_id, "ok": True, "result": {"status": "bye"}}
+        else:
+            response = {"id": request_id, "ok": False, "error": {"message": "unknown"}}
+        json.dump(response, sys.stdout, ensure_ascii=True)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        if command == "shutdown":
+            break
+        line = sys.stdin.readline()
+    raise SystemExit(0)
+
 if mode == "exit":
     raise SystemExit(3)
 if not line:
@@ -132,6 +154,15 @@ class OriginWorkerClientTests(unittest.TestCase):
         client.mode = "ok"
         self.assertEqual(client.ping(), {"status": "ok"})
 
+    def test_release_origin_keeps_worker_available(self) -> None:
+        client = self.make_client("release_then_ping")
+
+        self.assertEqual(client.ping(), {"status": "ok"})
+        client.release_origin()
+
+        self.assertIsNotNone(client._process)
+        self.assertEqual(client.ping(), {"status": "ok"})
+
     def test_timeout_kills_worker_and_next_request_restarts(self) -> None:
         client = self.make_client("sleep")
 
@@ -141,6 +172,21 @@ class OriginWorkerClientTests(unittest.TestCase):
         self.assertIsNone(client._process)
         client.mode = "ok"
         self.assertEqual(client.ping(), {"status": "ok"})
+
+    def test_release_origin_dispatch_detaches_without_shutdown(self) -> None:
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.force: bool | None = None
+
+            def detach(self, force: bool = False) -> None:
+                self.force = force
+
+        adapter = FakeAdapter()
+
+        result = dispatch(adapter, "release_origin", {})  # type: ignore[arg-type]
+
+        self.assertEqual(result, {"status": "released"})
+        self.assertTrue(adapter.force)
 
 
 if __name__ == "__main__":

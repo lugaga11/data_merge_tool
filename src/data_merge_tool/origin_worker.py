@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from .errors import UserVisibleError
-from .origin_automation import OriginAdapter, import_dataframe_to_origin
+from .origin_automation import OriginAdapter
 from .origin_protocol import (
     OriginAutomationError,
     apply_result_to_dict,
@@ -40,9 +40,12 @@ def dispatch(adapter: OriginAdapter, command: str, payload: dict[str, Any]) -> A
     if command == "shutdown":
         adapter.detach(force=True)
         return {"status": "bye"}
+    if command == "release_origin":
+        adapter.detach(force=True)
+        return {"status": "released"}
     if command == "import_dataframe":
         df = pd.read_pickle(Path(str(payload["pickle_path"])))
-        return import_dataframe_to_origin(
+        return adapter.import_dataframe(
             df,
             str(payload.get("axis_spec", "")),
             [str(value) for value in payload.get("long_names", [])],

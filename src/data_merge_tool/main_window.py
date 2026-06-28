@@ -138,6 +138,8 @@ class MainWindow(QMainWindow):
         title.setObjectName("AppTitle")
         layout.addWidget(title)
         layout.addStretch(1)
+        self.releaseOriginButton = make_button("释放 Origin 控制", self.release_origin_control, "quiet", width=150)
+        layout.addWidget(self.releaseOriginButton)
         self.modeButton = make_button("切换到 Origin 绘图面板", self.toggle_main_view, "primary", width=190)
         layout.addWidget(self.modeButton)
         return bar
@@ -951,6 +953,26 @@ class MainWindow(QMainWindow):
             self.originPanel.detach()
         self.origin_worker.shutdown()
         super().closeEvent(event)
+
+    def release_origin_control(self) -> None:
+        if self._active_tasks:
+            self.statusBar().showMessage("当前任务还在处理，请稍后释放 Origin 控制。", 4000)
+            return
+        if self.originPanel is not None and self.originPanel.has_active_origin_task():
+            self.statusBar().showMessage("Origin 自动化任务仍在执行，请稍后释放控制。", 4000)
+            return
+
+        def finish_release(_result: object) -> None:
+            if self.originPanel is not None:
+                self.originPanel.clear_origin_connection_state()
+            self.statusBar().showMessage("已释放 Origin 控制；现在可以关闭 Origin，下一次操作会自动重新连接。", 8000)
+
+        self.start_data_task(
+            "正在释放 Origin 控制...",
+            self.origin_worker.release_origin,
+            finish_release,
+            "释放 Origin 控制失败",
+        )
 
     def start_data_task(
         self,

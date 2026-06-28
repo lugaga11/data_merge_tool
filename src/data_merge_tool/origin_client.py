@@ -223,6 +223,20 @@ class OriginWorkerClient:
         )
         return paths_from_dict([str(path) for path in result])
 
+    def release_origin(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        if process.poll() is not None:
+            self._close_process_pipes(process)
+            self._process = None
+            return
+        try:
+            self.request("release_origin", timeout_seconds=5)
+        except Exception:
+            self._kill_process()
+            raise
+
     def shutdown(self) -> None:
         process = self._process
         if process is None:

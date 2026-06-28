@@ -44,6 +44,33 @@ def safe_origin_long_name(label: str | None, max_base_length: int = 56) -> str:
     return f"{clean_label} {time.strftime('%H%M')}"
 
 
+def _write_dataframe_to_origin(
+    op: Any,
+    df: pd.DataFrame,
+    axis_spec: str = "",
+    long_names: Sequence[str] | None = None,
+    comments: Sequence[str] | None = None,
+    workbook_label: str | None = None,
+) -> str:
+    worksheet = op.new_sheet("w", lname=safe_origin_long_name(workbook_label))
+    if worksheet is None:
+        raise UserVisibleError("Origin 已连接，但没有成功创建新的工作簿。")
+    worksheet = cast(Any, worksheet)
+    worksheet.from_df(df)
+    if axis_spec:
+        worksheet.cols_axis(axis_spec)
+    if long_names is not None:
+        worksheet.set_labels(list(long_names), "L")
+    if comments is not None:
+        worksheet.set_labels(list(comments), "C")
+    worksheet.activate()
+
+    book = worksheet.get_book()
+    book_name = getattr(book, "name", "")
+    sheet_name = getattr(worksheet, "name", "")
+    return f"{book_name}/{sheet_name}" if book_name and sheet_name else "Origin 工作簿"
+
+
 def import_dataframe_to_origin(
     df: pd.DataFrame,
     axis_spec: str = "",
@@ -61,23 +88,7 @@ def import_dataframe_to_origin(
 
     try:
         connect_origin(op)
-        worksheet = op.new_sheet("w", lname=safe_origin_long_name(workbook_label))
-        if worksheet is None:
-            raise UserVisibleError("Origin 已连接，但没有成功创建新的工作簿。")
-        worksheet = cast(Any, worksheet)
-        worksheet.from_df(df)
-        if axis_spec:
-            worksheet.cols_axis(axis_spec)
-        if long_names is not None:
-            worksheet.set_labels(list(long_names), "L")
-        if comments is not None:
-            worksheet.set_labels(list(comments), "C")
-        worksheet.activate()
-
-        book = worksheet.get_book()
-        book_name = getattr(book, "name", "")
-        sheet_name = getattr(worksheet, "name", "")
-        return f"{book_name}/{sheet_name}" if book_name and sheet_name else "Origin 工作簿"
+        return _write_dataframe_to_origin(op, df, axis_spec, long_names, comments, workbook_label)
     except UserVisibleError:
         raise
     except Exception as exc:
@@ -117,6 +128,25 @@ class OriginAdapter:
                 ) from exc
         self._connected = True
         return op
+
+    def import_dataframe(
+        self,
+        df: pd.DataFrame,
+        axis_spec: str = "",
+        long_names: Sequence[str] | None = None,
+        comments: Sequence[str] | None = None,
+        workbook_label: str | None = None,
+    ) -> str:
+        op = self.connect()
+        try:
+            return _write_dataframe_to_origin(op, df, axis_spec, long_names, comments, workbook_label)
+        except UserVisibleError:
+            raise
+        except Exception as exc:
+            raise UserVisibleError(
+                "originpro 导入失败。请确认 Origin/OriginPro 已安装、许可可用，并且允许外部 Python 连接。\n\n"
+                f"原始错误：{exc}"
+            ) from exc
 
     def active_context(self, op: Any | None = None) -> str:
         origin: Any = self._origin() if op is None else op
