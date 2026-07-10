@@ -74,7 +74,9 @@ class MainWindow(QMainWindow):
 
         self.file_queue = FileQueuePanel()
         self.read_options_panel = ReadOptionsPanel()
-        self.file_queue.layout().addWidget(self.read_options_panel)
+        file_queue_layout = self.file_queue.layout()
+        assert file_queue_layout is not None
+        file_queue_layout.addWidget(self.read_options_panel)
         self.merge_panel = MergePanel()
         self.preview_panel = PreviewPanel()
         self.plot_preview = PlotPreviewPanel()
@@ -195,7 +197,7 @@ class MainWindow(QMainWindow):
         read_hint = f"跳过 {options.skip_rows} 行，{'表头' if options.has_header else '无表头'}"
         title = f"{path.name}：预览 {dataframe.shape[0]} 行 x {dataframe.shape[1]} 列（{read_hint}）"
         self.preview_panel.set_input(dataframe, title)
-        self.merge_panel.set_columns(path, dataframe.columns)
+        self.merge_panel.set_columns(path, list(dataframe.columns))
 
     def mark_output_dirty(self) -> None:
         self._data_generation += 1
@@ -533,7 +535,7 @@ class MainWindow(QMainWindow):
         if not self.can_plot_from_import_data(options):
             QMessageBox.information(self, "无 X 数据", "请在 Y 列选择器中勾选当前 X 列后再绘图。")
             return
-        self.ensure_import_data("绘图", self.plot_preview.render)
+        self.ensure_import_data("绘图", self.plot_preview.render_origin_data)
 
 
 __all__ = ["MainWindow"]

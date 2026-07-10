@@ -35,7 +35,7 @@ class PatchTarget:
     layer_indices: list[int] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class FigureStylePatch:
     target: PatchTarget
     enabled_paths: set[str]

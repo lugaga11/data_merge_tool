@@ -3,18 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject
-from PySide6.QtWidgets import QApplication, QFileDialog, QLineEdit, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QFileDialog,
+    QLineEdit,
+    QMessageBox,
+    QSpinBox,
+)
 
+from .panel_contract import OriginPanelContract
 from .presets import DEFAULT_EXPORT_DIR
 from .protocol import ApplyResult, FigureStylePatch, PatchTarget, StyleSnapshot
 from .style_registry import filter_known_style_paths
-from ..ui.controls import NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 LEGEND_LINE_SEPARATOR = " | "
 
 
-class OriginPanelActionsMixin:
+class OriginPanelActionsMixin(OriginPanelContract):
     def selected_enabled_paths(self) -> list[str]:
         return sorted(path for path, check in self.path_checks.items() if check.isChecked())
 
@@ -221,9 +228,9 @@ class OriginPanelActionsMixin:
                 self.legendFrameCheck.setChecked(bool(legend.get("frame")))
 
     @staticmethod
-    def set_spin_if_number(spin: NoWheelDoubleSpinBox | NoWheelSpinBox, value: object) -> None:
+    def set_spin_if_number(spin: QDoubleSpinBox | QSpinBox, value: object) -> None:
         if isinstance(value, (int, float)):
-            if isinstance(spin, NoWheelSpinBox):
+            if isinstance(spin, QSpinBox):
                 spin.setValue(int(value))
             else:
                 spin.setValue(float(value))

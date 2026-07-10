@@ -7,10 +7,11 @@ from typing import Any
 
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
+from .panel_contract import OriginPanelContract
 from .presets import DEFAULT_EXPORT_DIR, PRESETS, SCHEMA_VERSION, USER_PRESETS_PATH
 
 
-class OriginPanelPresetsMixin:
+class OriginPanelPresetsMixin(OriginPanelContract):
     def load_selected_preset(self) -> None:
         name = self.presetCombo.currentText()
         if name not in self.all_presets():

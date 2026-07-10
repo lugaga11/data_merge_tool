@@ -55,7 +55,7 @@ LEGEND_POSITION_OPTIONS = (
 )
 
 
-class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin, QWidget):
+class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
     def __init__(
         self,
         origin_client: OriginWorkerClient | None = None,

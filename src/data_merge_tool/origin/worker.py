@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from io import TextIOWrapper
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -43,7 +44,7 @@ def dispatch(adapter: OriginAdapter, command: str, payload: dict[str, Any]) -> A
         adapter.detach(force=True)
         return {"status": "released"}
     if command == "import_dataframe":
-        df = pd.read_pickle(Path(str(payload["pickle_path"])))
+        df = cast(pd.DataFrame, pd.read_pickle(Path(str(payload["pickle_path"]))))
         return adapter.import_dataframe(
             df,
             str(payload.get("axis_spec", "")),
@@ -78,13 +79,13 @@ def dispatch(adapter: OriginAdapter, command: str, payload: dict[str, Any]) -> A
 
 
 def main() -> int:
-    if hasattr(sys.stdin, "reconfigure"):
-        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+    stdin = cast(TextIOWrapper, sys.stdin)
+    stdout = cast(TextIOWrapper, sys.stdout)
+    stdin.reconfigure(encoding="utf-8", errors="replace")
+    stdout.reconfigure(encoding="utf-8", errors="strict")
 
     adapter = OriginAdapter()
-    for raw_line in sys.stdin:
+    for raw_line in stdin:
         line = raw_line.strip()
         if not line:
             continue
@@ -107,8 +108,8 @@ def main() -> int:
                     "message": _error_message(exc),
                 },
             }
-        sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
-        sys.stdout.flush()
+        stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
+        stdout.flush()
         if command == "shutdown":
             break
     return 0

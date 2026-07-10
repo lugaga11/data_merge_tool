@@ -75,7 +75,7 @@ class PlotPreviewPanel(QWidget):
     def is_available(self) -> bool:
         return MATPLOTLIB_AVAILABLE and self.figure is not None and self.canvas is not None
 
-    def render(self, origin_data: OriginImportData) -> bool:
+    def render_origin_data(self, origin_data: OriginImportData) -> bool:
         if not self.is_available():
             self.information_requested.emit("绘图不可用", "当前环境未安装 matplotlib。")
             return False

@@ -209,7 +209,7 @@ class UiComponentTests(unittest.TestCase):
                 comments=["共享 X", "sample"],
                 workbook_label="sample",
             )
-            self.assertTrue(panel.render(origin_data))
+            self.assertTrue(panel.render_origin_data(origin_data))
             assert panel.figure is not None
             axis = panel.figure.axes[0]
             self.assertEqual(axis.get_xlabel(), "x")
@@ -223,7 +223,7 @@ class UiComponentTests(unittest.TestCase):
                 comments=origin_data.comments,
                 workbook_label=origin_data.workbook_label,
             )
-            self.assertFalse(panel.render(invalid))
+            self.assertFalse(panel.render_origin_data(invalid))
             self.assertEqual(information[-1][0], "无 X 数据")
         finally:
             panel.close()

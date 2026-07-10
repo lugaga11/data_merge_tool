@@ -22,6 +22,7 @@
 - `src/data_merge_tool/origin/panel.py`：Origin 绘图和格式控制面板组合。
 - `src/data_merge_tool/origin/panel_actions.py`：样式回读、patch、文本编辑、应用/撤销和导出动作。
 - `src/data_merge_tool/origin/panel_presets.py`：preset 控件状态、导入导出和保存删除操作。
+- `src/data_merge_tool/origin/panel_contract.py`：Origin 面板 mixin 共享的控件和宿主类型契约。
 - `src/data_merge_tool/origin/presets.py`：Origin preset 读写、schema 校验和原子保存。
 - `src/data_merge_tool/origin/style_registry.py`：Origin 样式字段注册表。
 - `src/data_merge_tool/origin/client.py`：GUI 主进程侧 Origin worker 客户端。

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional, cast
 
 import pandas as pd
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, QPersistentModelIndex
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -37,13 +37,13 @@ class DataFrameModel(QAbstractTableModel):
         super().__init__(parent)
         self._df = df if df is not None else pd.DataFrame()
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._df)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._df.columns)
 
-    def data(self, index: QModelIndex, role: int = DISPLAY_ROLE):
+    def data(self, index: QModelIndex | QPersistentModelIndex, role: int = DISPLAY_ROLE):
         if not index.isValid():
             return None
         if role == DISPLAY_ROLE:

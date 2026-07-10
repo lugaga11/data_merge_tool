@@ -1,7 +1,7 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, cast
 
 import pandas as pd
 
@@ -27,7 +27,7 @@ def coerce_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     for column in list(result.columns):
         if result[column].dtype == object:
-            converted = pd.to_numeric(result[column], errors="coerce")
+            converted = cast(pd.Series, pd.to_numeric(result[column], errors="coerce"))
             if converted.notna().sum() == result[column].notna().sum():
                 result[column] = converted
     return result
@@ -118,7 +118,7 @@ def read_table(
                 skiprows=options.skip_rows,
                 engine=engine,
                 nrows=nrows,
-                usecols=selected_columns,
+                usecols=cast(Any, selected_columns),
             )
         else:
             header_names = _wide_whitespace_header_names(path, options)
@@ -130,7 +130,7 @@ def read_table(
                 names=header_names,
                 skiprows=options.skip_rows + 1 if header_names is not None else options.skip_rows,
                 nrows=nrows,
-                usecols=selected_columns,
+                usecols=cast(Any, selected_columns),
                 sep=sep,
                 encoding=detect_encoding(path, options.encoding_label),
                 engine=engine,

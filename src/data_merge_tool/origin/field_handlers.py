@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import math
 import re
 from typing import Any
@@ -7,8 +8,16 @@ from typing import Any
 from .protocol import ApplyResult, FigureStylePatch, OriginAutomationError, StyleSnapshot
 
 
-class OriginStyleFieldsMixin:
+class OriginStyleFieldsMixin(ABC):
     """Read, apply, and restore Origin graph style fields."""
+
+    @abstractmethod
+    def connect(self, *, start_if_missing: bool = False) -> Any:
+        """Return the connected originpro module supplied by the adapter."""
+
+    @abstractmethod
+    def _find_graph(self, op: Any) -> Any:
+        """Return the active graph supplied by the adapter."""
 
     def read_style_snapshot(self, patch: FigureStylePatch) -> StyleSnapshot:
         op = self.connect()
