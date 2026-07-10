@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import sys
-import traceback
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from .errors import UserVisibleError
-from .origin_automation import OriginAdapter
-from .origin_protocol import (
+from ..errors import UserVisibleError
+from .automation import OriginAdapter
+from .protocol import (
     OriginAutomationError,
     apply_result_to_dict,
     graph_info_to_dict,
@@ -105,9 +104,7 @@ def main() -> int:
                 "id": request_id,
                 "ok": False,
                 "error": {
-                    "type": type(exc).__name__,
                     "message": _error_message(exc),
-                    "traceback": traceback.format_exc(),
                 },
             }
         sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")

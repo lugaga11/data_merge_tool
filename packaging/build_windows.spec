@@ -4,25 +4,30 @@ from pathlib import Path
 
 
 ROOT = Path(SPECPATH).resolve().parents[0]
-ENTRY = next(ROOT.glob("*_v2.3.0.py"))
-ASSET = ROOT / "src" / "data_merge_tool" / "assets" / "ui_checkmark.svg"
+VERSION_NS = {}
+exec((ROOT / "src" / "data_merge_tool" / "version.py").read_text(encoding="utf-8"), VERSION_NS)
+VERSION = VERSION_NS["VERSION"]
+ENTRY = ROOT / "数据合并工具.py"
+RESOURCES = ROOT / "src" / "data_merge_tool" / "resources"
 
 
 a = Analysis(
     [str(ENTRY)],
     pathex=[str(ROOT), str(ROOT / "src")],
     binaries=[],
-    datas=[(str(ASSET), "assets")],
+    datas=[
+        (str(path), "resources")
+        for path in RESOURCES.iterdir()
+        if path.suffix.lower() in {".qss", ".svg"}
+    ],
     hiddenimports=[
         "xlrd",
         "openpyxl",
-        "matplotlib.backends.backend_qtagg",
-        "data_merge_tool.origin_worker",
-        "data_merge_tool.origin_client",
-        "data_merge_tool.origin_protocol",
-        "data_merge_tool.origin_automation",
         "originpro",
         "OriginExt",
+        "data_merge_tool.origin.worker",
+        "data_merge_tool.origin.automation",
+        "data_merge_tool.origin.field_handlers",
     ],
     hookspath=[],
     hooksconfig={"matplotlib": {"backends": ["QtAgg"]}},
@@ -57,7 +62,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="数据合并工具v2.3.0",
+    name=f"数据合并工具v{VERSION}",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -66,8 +71,4 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )

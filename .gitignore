@@ -3,6 +3,19 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+# Test, coverage, and tool caches
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
 # Virtual environments
 .venv/
 venv/
@@ -13,7 +26,9 @@ ENV/
 artifacts/
 build/
 dist/
+.eggs/
 *.egg-info/
+pip-wheel-metadata/
 *.manifest
 *.pkg
 *.toc
@@ -23,6 +38,8 @@ warn-*.txt
 
 # Local application data
 user_presets.json
+user_presets.json.tmp
+user_presets.bad-*.json
 origin_exports/
 
 # Local validation data

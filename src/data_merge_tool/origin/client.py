@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from .origin_protocol import (
+from .protocol import (
     DEFAULT_ORIGIN_TIMEOUT_SECONDS,
     LONG_ORIGIN_TIMEOUT_SECONDS,
     ApplyResult,
@@ -38,11 +38,11 @@ class OriginWorkerClient:
     def _command(self) -> list[str]:
         if getattr(sys, "frozen", False):
             return [sys.executable, "--origin-worker"]
-        return [sys.executable, "-m", "data_merge_tool.origin_worker"]
+        return [sys.executable, "-m", "data_merge_tool.origin.worker"]
 
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
-        src_root = str(Path(__file__).resolve().parents[1])
+        src_root = str(Path(__file__).resolve().parents[2])
         current = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = src_root if not current else src_root + os.pathsep + current
         env["PYTHONIOENCODING"] = "utf-8"
@@ -58,7 +58,7 @@ class OriginWorkerClient:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        cwd = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
+        cwd = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[3]
         self._process = subprocess.Popen(
             self._command(),
             stdin=subprocess.PIPE,
@@ -247,7 +247,9 @@ class OriginWorkerClient:
             return
         try:
             self.request("shutdown", timeout_seconds=5)
+            process.wait(timeout=5)
         except Exception:
             self._kill_process()
-        finally:
+        else:
+            self._close_process_pipes(process)
             self._process = None

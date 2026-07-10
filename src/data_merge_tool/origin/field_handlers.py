@@ -1,235 +1,14 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 import re
-import time
-from typing import Any, Sequence, cast
+from typing import Any
 
-import pandas as pd
-
-from .errors import UserVisibleError
-from .origin_protocol import (
-    ApplyResult,
-    FigureStylePatch,
-    GraphInfo,
-    LayerInfo,
-    OriginAutomationError,
-    StyleSnapshot,
-)
+from .protocol import ApplyResult, FigureStylePatch, OriginAutomationError, StyleSnapshot
 
 
-def connect_origin(op: Any) -> None:
-    try:
-        op.attach()
-    except Exception:
-        op.set_show(True)
-        return
-    op.set_show(True)
-
-
-def safe_origin_long_name(label: str | None, max_base_length: int = 56) -> str:
-    clean_label = re.sub(r"[\r\n\t]+", " ", label or "")
-    clean_label = re.sub(r"\s+", " ", clean_label).strip()
-    clean_label = re.sub(r'[\\/:*?"<>|]+', "-", clean_label)
-    clean_label = clean_label.strip(" -_.") or "合并数据"
-
-    if len(clean_label) > max_base_length:
-        tail_length = max(8, (max_base_length - 3) // 3)
-        head_length = max_base_length - tail_length - 3
-        head = clean_label[:head_length].rstrip(" -_.")
-        tail = clean_label[-tail_length:].lstrip(" -_.")
-        clean_label = f"{head}...{tail}"
-
-    return f"{clean_label} {time.strftime('%H%M')}"
-
-
-def _write_dataframe_to_origin(
-    op: Any,
-    df: pd.DataFrame,
-    axis_spec: str = "",
-    long_names: Sequence[str] | None = None,
-    comments: Sequence[str] | None = None,
-    workbook_label: str | None = None,
-) -> str:
-    worksheet = op.new_sheet("w", lname=safe_origin_long_name(workbook_label))
-    if worksheet is None:
-        raise UserVisibleError("Origin 已连接，但没有成功创建新的工作簿。")
-    worksheet = cast(Any, worksheet)
-    worksheet.from_df(df)
-    if axis_spec:
-        worksheet.cols_axis(axis_spec)
-    if long_names is not None:
-        worksheet.set_labels(list(long_names), "L")
-    if comments is not None:
-        worksheet.set_labels(list(comments), "C")
-    worksheet.activate()
-
-    book = worksheet.get_book()
-    book_name = getattr(book, "name", "")
-    sheet_name = getattr(worksheet, "name", "")
-    return f"{book_name}/{sheet_name}" if book_name and sheet_name else "Origin 工作簿"
-
-
-def import_dataframe_to_origin(
-    df: pd.DataFrame,
-    axis_spec: str = "",
-    long_names: Sequence[str] | None = None,
-    comments: Sequence[str] | None = None,
-    workbook_label: str | None = None,
-) -> str:
-    try:
-        import originpro as op
-    except ImportError as exc:
-        raise UserVisibleError(
-            "缺少连接 Origin 所需的 originpro 组件。\n"
-            "请先在当前 Python 环境中安装：pip install originpro"
-        ) from exc
-
-    try:
-        connect_origin(op)
-        return _write_dataframe_to_origin(op, df, axis_spec, long_names, comments, workbook_label)
-    except UserVisibleError:
-        raise
-    except Exception as exc:
-        raise UserVisibleError(
-            "originpro 导入失败。请确认 Origin/OriginPro 已安装、许可可用，并且允许外部 Python 连接。\n\n"
-            f"原始错误：{exc}"
-        ) from exc
-
-
-class OriginAdapter:
-    def __init__(self) -> None:
-        self._op: Any | None = None
-        self._connected = False
-
-    def _origin(self) -> Any:
-        if self._op is not None:
-            return self._op
-        try:
-            import originpro as op
-        except ImportError as exc:
-            raise OriginAutomationError("当前 Python 环境缺少 originpro。") from exc
-        self._op = op
-        return op
-
-    def connect(self) -> Any:
-        op = self._origin()
-        if self._connected:
-            return op
-        try:
-            op.attach()
-        except Exception:
-            try:
-                op.set_show(True)
-            except Exception as exc:
-                raise OriginAutomationError(
-                    "无法连接或启动 Origin。请确认 Origin/OriginPro 已安装且许可可用。"
-                ) from exc
-        self._connected = True
-        return op
-
-    def import_dataframe(
-        self,
-        df: pd.DataFrame,
-        axis_spec: str = "",
-        long_names: Sequence[str] | None = None,
-        comments: Sequence[str] | None = None,
-        workbook_label: str | None = None,
-    ) -> str:
-        op = self.connect()
-        try:
-            return _write_dataframe_to_origin(op, df, axis_spec, long_names, comments, workbook_label)
-        except UserVisibleError:
-            raise
-        except Exception as exc:
-            raise UserVisibleError(
-                "originpro 导入失败。请确认 Origin/OriginPro 已安装、许可可用，并且允许外部 Python 连接。\n\n"
-                f"原始错误：{exc}"
-            ) from exc
-
-    def active_context(self, op: Any | None = None) -> str:
-        origin: Any = self._origin() if op is None else op
-        pieces: list[str] = []
-        try:
-            project = str(origin.po.GetProjectName()).strip()
-            if project:
-                pieces.append(f"项目：{project}")
-        except Exception:
-            pass
-        try:
-            active_page = origin.po.ActivePage
-            page_name = str(active_page.GetName()).strip() if active_page is not None else ""
-            if page_name:
-                pieces.append(f"活动窗口：{page_name}")
-        except Exception:
-            pass
-        return "；".join(pieces)
-
-    def _active_window_error(self, op: Any, expected: str) -> OriginAutomationError:
-        context = self.active_context(op)
-        suffix = f"当前连接到：{context}。" if context else "未能取得当前连接信息。"
-        return OriginAutomationError(f"当前 Origin 活动窗口不是 {expected}。{suffix}请先切到目标 Origin 文件中的对应窗口，再重试。")
-
-    def detach(self, force: bool = False) -> None:
-        if self._op is None:
-            return
-        if not force:
-            return
-        try:
-            self._op.detach()
-        finally:
-            self._op = None
-            self._connected = False
-
-
-    def _find_graph(self, op: Any) -> Any:
-        try:
-            graph = op.find_graph()
-        except Exception as exc:
-            raise self._active_window_error(op, "图窗口") from exc
-        if graph is None:
-            raise self._active_window_error(op, "图窗口")
-        return graph
-
-    def _find_sheet(self, op: Any) -> Any:
-        try:
-            worksheet = op.find_sheet()
-        except Exception as exc:
-            raise self._active_window_error(op, "worksheet") from exc
-        if worksheet is None:
-            raise self._active_window_error(op, "worksheet")
-        return worksheet
-    def scan_active_graph(self) -> GraphInfo:
-        op = self.connect()
-        graph = self._find_graph(op)
-
-        layers: list[LayerInfo] = []
-        for zero_index in range(len(graph)):
-            layer = graph[zero_index]
-            plots = layer.plot_list()
-            plot_names = [getattr(plot, "name", f"Plot {i + 1}") for i, plot in enumerate(plots)]
-            layers.append(
-                LayerInfo(
-                    index=zero_index + 1,
-                    name=getattr(layer, "name", f"Layer {zero_index + 1}"),
-                    plot_count=len(plots),
-                    plot_names=plot_names,
-                )
-            )
-
-        return GraphInfo(
-            name=getattr(graph, "name", "Active Graph"),
-            long_name=getattr(graph, "lname", ""),
-            layers=layers,
-        )
-
-    def read_active_layer_style(self, layer_index: int = 1) -> dict[str, Any]:
-        op = self.connect()
-        graph = self._find_graph(op)
-        if layer_index < 1 or layer_index > len(graph):
-            raise OriginAutomationError(f"当前图没有 Layer {layer_index}。")
-        return self._read_graph_layer_style(op, graph, layer_index)
+class OriginStyleFieldsMixin:
+    """Read, apply, and restore Origin graph style fields."""
 
     def read_style_snapshot(self, patch: FigureStylePatch) -> StyleSnapshot:
         op = self.connect()
@@ -243,6 +22,11 @@ class OriginAdapter:
             enabled_paths=set(patch.enabled_paths),
             styles={index: self._read_graph_layer_style(op, graph, index) for index in layer_indices},
         )
+
+    def apply_style_patch(self, patch: FigureStylePatch) -> ApplyResult:
+        op = self.connect()
+        graph = self._find_graph(op)
+        return self._apply_style_patch_to_graph(graph, patch)
 
     def restore_style_snapshot(self, snapshot: StyleSnapshot) -> ApplyResult:
         op = self.connect()
@@ -332,7 +116,7 @@ class OriginAdapter:
                 run(
                     "text.legend_text",
                     f"text.legend_text[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_legend_text(op, layer, values),
+                    lambda layer=layer, values=restore_text: self._apply_legend_text(layer, values),
                 )
                 run(
                     "text.title_size_pt",
@@ -546,14 +330,10 @@ class OriginAdapter:
             return text
         resolved = text
         for token in sorted(set(re.findall(r"%\([^()]+\)", text)), key=len, reverse=True):
-            value = self._evaluate_origin_text_token(op, token)
+            value = self._evaluate_origin_string_expression(op, token)
             if value and value != token:
                 resolved = resolved.replace(token, value)
         return self._clean_origin_text_markup(resolved)
-
-    @staticmethod
-    def _evaluate_origin_text_token(op: Any, token: str) -> str:
-        return OriginAdapter._evaluate_origin_string_expression(op, token)
 
     @staticmethod
     def _evaluate_origin_string_expression(op: Any, expression: str) -> str:
@@ -639,38 +419,7 @@ class OriginAdapter:
             return "log10"
         return None
 
-    def plot_active_sheet(self, plot_kind: str) -> str:
-        op = self.connect()
-        worksheet = self._find_sheet(op)
-
-        plot_id = {"线图": 200, "散点图": 201, "线+符号": 202}.get(plot_kind, 200)
-        try:
-            if not self._has_worksheet_selection(op):
-                self._select_entire_worksheet(worksheet)
-            worksheet.lt_exec(f"worksheet -p {plot_id};")
-        except Exception as exc:
-            raise OriginAutomationError("Origin 未能根据当前 worksheet 选区绘图。请确认已选中要绘制的数据列或数据范围。") from exc
-        return f"已调用 Origin 当前选区绘图：{plot_kind}。"
-
-    @staticmethod
-    def _has_worksheet_selection(op: Any) -> bool:
-        c1 = op.lt_int("SELC1")
-        c2 = op.lt_int("SELC2")
-        r1 = op.lt_int("SELR1")
-        r2 = op.lt_int("SELR2")
-        return any(value > 0 for value in (c1, c2, r1, r2))
-
-    @staticmethod
-    def _select_entire_worksheet(worksheet: Any) -> None:
-        column_count = int(getattr(worksheet, "cols", 0))
-        if column_count <= 0:
-            raise OriginAutomationError("当前 worksheet 没有可绘制的列。")
-        worksheet.lt_exec(f"worksheet -s 1 0 {column_count} 0;")
-
-    def apply_style_patch(self, patch: FigureStylePatch) -> ApplyResult:
-        op = self.connect()
-        graph = self._find_graph(op)
-
+    def _apply_style_patch_to_graph(self, graph: Any, patch: FigureStylePatch) -> ApplyResult:
         layer_indices = self._resolve_layers(graph, patch)
         if not layer_indices:
             raise OriginAutomationError("没有可应用的目标图层。")
@@ -727,7 +476,7 @@ class OriginAdapter:
             )
             run(
                 f"text.legend_text[{layer_index}]",
-                lambda layer=layer: self._apply_legend_text(op, layer, patch.text),
+                lambda layer=layer: self._apply_legend_text(layer, patch.text),
             )
             run(
                 f"text.title_size_pt[{layer_index}]",
@@ -772,21 +521,6 @@ class OriginAdapter:
             applied=applied,
             failed=failed,
         )
-
-    def export_active_graph(self, directory: Path, formats: list[str], width_px: int) -> list[Path]:
-        op = self.connect()
-        graph = self._find_graph(op)
-        directory.mkdir(parents=True, exist_ok=True)
-        graph_name = getattr(graph, "name", "graph")
-        exported: list[Path] = []
-        for fmt in formats:
-            path = directory / f"{graph_name}.{fmt}"
-            result = graph.save_fig(str(path), type=fmt, replace=True, width=width_px)
-            if result:
-                exported.append(Path(result))
-        if not exported:
-            raise OriginAutomationError("Origin 没有返回成功导出的文件。")
-        return exported
 
     def _resolve_layers(self, graph: Any, patch: FigureStylePatch) -> list[int]:
         count = len(graph)
@@ -860,7 +594,7 @@ class OriginAdapter:
         title = text_values[f"{axis_name}_title"]
         layer.axis(axis_name).title = str(title)
 
-    def _apply_legend_text(self, op: Any, layer: Any, text_values: dict[str, Any]) -> None:
+    def _apply_legend_text(self, layer: Any, text_values: dict[str, Any]) -> None:
         legend = layer.label("legend") or layer.label("Legend")
         if legend is None:
             layer.lt_exec("legend;")
@@ -925,4 +659,3 @@ class OriginAdapter:
             layer.lt_exec("legend.x=layer.x.to-legend.dx/2;legend.y=layer.y.from+legend.dy/2;")
         elif position == "best":
             layer.lt_exec("legend.smartpos=1;")
-

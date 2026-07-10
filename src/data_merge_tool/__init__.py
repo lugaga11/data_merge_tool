@@ -1,5 +1,7 @@
 from __future__ import annotations
 
-__version__ = "2.3.0"
+from .version import VERSION
+
+__version__ = VERSION
 
 __all__ = ["main"]

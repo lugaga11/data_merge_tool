@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+from typing import Callable, Optional, TypeAlias
+
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt
+from PySide6.QtGui import QMouseEvent, QPainter, QPolygon, QWheelEvent
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QGroupBox,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class NoWheelComboBox(QComboBox):
+    """Prevent accidental value changes while scrolling a settings pane."""
+
+    BUTTON_ZONE_WIDTH = 26
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        button_left = self.width() - self.BUTTON_ZONE_WIDTH
+        if button_left < 0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(Qt.GlobalColor.black)
+
+        center_x = button_left + self.BUTTON_ZONE_WIDTH // 2
+        center_y = self.height() // 2
+        painter.drawPolygon(
+            QPolygon(
+                [
+                    QPoint(center_x - 4, center_y - 2),
+                    QPoint(center_x + 4, center_y - 2),
+                    QPoint(center_x, center_y + 3),
+                ]
+            )
+        )
+
+
+SPIN_BUTTON_ZONE_WIDTH = 26
+SpinWidget: TypeAlias = QSpinBox | QDoubleSpinBox
+
+
+def _configure_no_wheel_spin(spin: SpinWidget) -> None:
+    spin.setMouseTracking(True)
+    editor = spin.findChild(QLineEdit)
+    if editor is not None:
+        editor.setMouseTracking(True)
+        editor.installEventFilter(spin)
+
+
+def _spin_button_step_at(spin: SpinWidget, pos) -> Optional[int]:
+    if pos.x() < spin.width() - SPIN_BUTTON_ZONE_WIDTH:
+        return None
+    return 1 if pos.y() < spin.height() / 2 else -1
+
+
+def _sync_spin_button_cursor(spin: SpinWidget, pos) -> None:
+    if _spin_button_step_at(spin, pos) is None:
+        spin.unsetCursor()
+        editor = spin.findChild(QLineEdit)
+        if editor is not None:
+            editor.unsetCursor()
+        return
+    spin.setCursor(Qt.CursorShape.ArrowCursor)
+    editor = spin.findChild(QLineEdit)
+    if editor is not None:
+        editor.setCursor(Qt.CursorShape.ArrowCursor)
+
+
+def _paint_spin_arrows(spin: SpinWidget) -> None:
+    button_left = spin.width() - SPIN_BUTTON_ZONE_WIDTH
+    if button_left < 0:
+        return
+
+    painter = QPainter(spin)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(Qt.GlobalColor.black)
+
+    center_x = button_left + SPIN_BUTTON_ZONE_WIDTH // 2
+    upper_y = max(7, spin.height() // 4)
+    lower_y = min(spin.height() - 7, (spin.height() * 3) // 4)
+    painter.drawPolygon(
+        QPolygon(
+            [
+                QPoint(center_x - 4, upper_y + 2),
+                QPoint(center_x + 4, upper_y + 2),
+                QPoint(center_x, upper_y - 3),
+            ]
+        )
+    )
+    painter.drawPolygon(
+        QPolygon(
+            [
+                QPoint(center_x - 4, lower_y - 2),
+                QPoint(center_x + 4, lower_y - 2),
+                QPoint(center_x, lower_y + 3),
+            ]
+        )
+    )
+
+
+def _handle_spin_event_filter(spin: SpinWidget, watched: QObject, event: QEvent) -> bool:
+    if isinstance(event, QMouseEvent):
+        pos = spin.mapFromGlobal(event.globalPosition().toPoint())
+        if event.type() == QEvent.Type.MouseMove:
+            _sync_spin_button_cursor(spin, pos)
+        elif event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            step = _spin_button_step_at(spin, pos)
+            if step is not None:
+                spin.setFocus()
+                spin.stepBy(step)
+                event.accept()
+                return True
+    elif event.type() == QEvent.Type.Leave:
+        spin.unsetCursor()
+        if isinstance(watched, QWidget):
+            watched.unsetCursor()
+    return False
+
+
+def _handle_spin_mouse_press(spin: SpinWidget, event: QMouseEvent) -> bool:
+    if event.button() == Qt.MouseButton.LeftButton:
+        step = _spin_button_step_at(spin, event.position().toPoint())
+        if step is not None:
+            spin.setFocus()
+            spin.stepBy(step)
+            event.accept()
+            return True
+    return False
+
+
+class NoWheelSpinBox(QSpinBox):
+    """A spin box that ignores wheel input and keeps explicit arrow hit zones."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        _configure_no_wheel_spin(self)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if _handle_spin_event_filter(self, watched, event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        _sync_spin_button_cursor(self, event.position().toPoint())
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if _handle_spin_mouse_press(self, event):
+            return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        _paint_spin_arrows(self)
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """Double precision counterpart to :class:`NoWheelSpinBox`."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        _configure_no_wheel_spin(self)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if _handle_spin_event_filter(self, watched, event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        _sync_spin_button_cursor(self, event.position().toPoint())
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if _handle_spin_mouse_press(self, event):
+            return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        _paint_spin_arrows(self)
+
+    def textFromValue(self, value: float) -> str:
+        text = f"{value:.{self.decimals()}f}".rstrip("0").rstrip(".")
+        return text if text and text != "-0" else "0"
+
+
+def make_button(
+    text: str,
+    slot: Callable[[], None],
+    role: str = "",
+    *,
+    keep_text_focus: bool = False,
+    width: int | None = None,
+) -> QPushButton:
+    button = QPushButton(text)
+    button.setMinimumHeight(32)
+    button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    if width is not None:
+        button.setMinimumWidth(width)
+        button.setMaximumWidth(width)
+    if role:
+        button.setProperty("role", role)
+    if keep_text_focus:
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    button.clicked.connect(slot)
+    return button
+
+
+def make_panel(
+    name: str,
+    margins: tuple[int, int, int, int] = (14, 14, 14, 14),
+    spacing: int = 10,
+) -> QWidget:
+    panel = QWidget()
+    panel.setObjectName(name)
+    layout = QVBoxLayout(panel)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(spacing)
+    return panel
+
+
+def make_section_title(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("SectionTitle")
+    return label
+
+
+def make_titled_group(title: str) -> QGroupBox:
+    group = QGroupBox(title)
+    group.setObjectName("TitledGroup")
+    return group

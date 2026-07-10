@@ -13,9 +13,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from data_merge_tool.origin_client import OriginWorkerClient
-from data_merge_tool.origin_protocol import OriginWorkerError
-from data_merge_tool.origin_worker import dispatch
+from data_merge_tool.origin.client import OriginWorkerClient
+from data_merge_tool.origin.protocol import OriginWorkerError
+from data_merge_tool.origin.worker import dispatch
 
 
 FAKE_WORKER = r'''
@@ -108,7 +108,7 @@ class OriginWorkerClientTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.worker_script = Path(self.temp_dir.name) / "fake_origin_worker.py"
         self.worker_script.write_text(textwrap.dedent(FAKE_WORKER), encoding="utf-8")
-        self.client: FakeWorkerClient | None = None
+        self.client: OriginWorkerClient | None = None
 
     def tearDown(self) -> None:
         if self.client is not None:
@@ -116,8 +116,19 @@ class OriginWorkerClientTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def make_client(self, mode: str) -> FakeWorkerClient:
-        self.client = FakeWorkerClient(self.worker_script, mode)
-        return self.client
+        client = FakeWorkerClient(self.worker_script, mode)
+        self.client = client
+        return client
+
+    def test_source_worker_module_starts_from_relocated_client(self) -> None:
+        client = OriginWorkerClient()
+        self.client = client
+
+        self.assertEqual(client._command(), [sys.executable, "-m", "data_merge_tool.origin.worker"])
+        self.assertEqual(client.ping(), {"status": "ok"})
+
+        client.shutdown()
+        self.assertIsNone(client._process)
 
     def test_unicode_worker_error_is_preserved(self) -> None:
         client = self.make_client("unicode_error")

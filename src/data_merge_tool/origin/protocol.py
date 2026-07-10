@@ -20,15 +20,12 @@ class OriginWorkerError(RuntimeError):
 @dataclass(frozen=True)
 class LayerInfo:
     index: int
-    name: str
     plot_count: int
-    plot_names: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class GraphInfo:
     name: str
-    long_name: str
     layers: list[LayerInfo]
 
 
@@ -69,25 +66,20 @@ class StyleSnapshot:
 def layer_info_to_dict(info: LayerInfo) -> dict[str, Any]:
     return {
         "index": info.index,
-        "name": info.name,
         "plot_count": info.plot_count,
-        "plot_names": list(info.plot_names),
     }
 
 
 def layer_info_from_dict(data: dict[str, Any]) -> LayerInfo:
     return LayerInfo(
         index=int(data["index"]),
-        name=str(data["name"]),
         plot_count=int(data["plot_count"]),
-        plot_names=[str(name) for name in data.get("plot_names", [])],
     )
 
 
 def graph_info_to_dict(info: GraphInfo) -> dict[str, Any]:
     return {
         "name": info.name,
-        "long_name": info.long_name,
         "layers": [layer_info_to_dict(layer) for layer in info.layers],
     }
 
@@ -95,7 +87,6 @@ def graph_info_to_dict(info: GraphInfo) -> dict[str, Any]:
 def graph_info_from_dict(data: dict[str, Any]) -> GraphInfo:
     return GraphInfo(
         name=str(data["name"]),
-        long_name=str(data.get("long_name", "")),
         layers=[layer_info_from_dict(layer) for layer in data.get("layers", [])],
     )
 
