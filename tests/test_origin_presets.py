@@ -41,6 +41,21 @@ class PresetStoreTests(unittest.TestCase):
         self.assertEqual(preset["layer"]["frame"]["left"], True)
         self.assertEqual(preset["export"]["formats"], ["png"])
 
+    def test_future_format_is_preserved_on_load_import_and_save(self) -> None:
+        for envelope in ({"presets": {"new": {}}}, {"new_format": []}):
+            with self.subTest(envelope=envelope):
+                original = json.dumps({"schema_version": SCHEMA_VERSION + 1, **envelope})
+                self.path.write_text(original, encoding="utf-8")
+                result = self.store.load()
+                self.assertEqual(result.presets, {})
+                self.assertIn("格式版本", result.warning or "")
+                self.assertIsNone(result.quarantined_path)
+                with self.assertRaisesRegex(ValueError, "格式版本"):
+                    self.store.load_import_file(self.path)
+                with self.assertRaisesRegex(ValueError, "格式版本"):
+                    self.store.save_atomic({"replacement": {}})
+                self.assertEqual(self.path.read_text(encoding="utf-8"), original)
+
     def test_corrupt_json_is_quarantined(self) -> None:
         self.path.write_text("{not-json", encoding="utf-8")
 

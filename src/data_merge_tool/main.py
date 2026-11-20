@@ -9,12 +9,9 @@ def main() -> int:
 
         return origin_worker_main()
 
-    import pandas as pd
     from PySide6.QtWidgets import QApplication
 
     from .ui.main_window import MainWindow
-
-    pd.set_option("mode.copy_on_write", True)
 
     app = QApplication(sys.argv)
     window = MainWindow()

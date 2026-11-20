@@ -1,8 +1,15 @@
 # 数据合并工具
 
-当前开发版本：v2.5.0。
+当前开发版本：v2.5.1。
 
 这是一个基于 PySide6 的桌面工具，用于读取多种实验数据文件，预览并合并数据列，并支持将结果导出或发送到 Origin。根目录的 `数据合并工具.py` 是本地启动入口，实际业务代码在 `src/data_merge_tool/` 中。
+
+## v2.5.1 更新要点
+
+- 轻量绘图支持框选缩放、拖动平移、还原视图和保存图片。单击图例名称或线段可隐藏或重新显示对应曲线。
+- 修复 pandas 3 下带尾注文件的数值列转换、中文编码采样边界和表头错列问题。自动识别不可靠时使用手动设置，并在状态栏提示。
+- 三种合并模式共用列预检。多个文件的 X/Y 列越界时，一次列出所有受影响的文件。
+- 修复 Origin 目标图层选择不互斥的问题。数值输入框支持长按连续步进，载入更高版本的预设文件时会保留原文件。
 
 ## v2.5.0 更新要点
 
@@ -18,7 +25,7 @@
 
 ## 目录结构
 
-- `src/data_merge_tool/`：当前 v2.5.0 模块化源码。
+- `src/data_merge_tool/`：当前 v2.5.1 模块化源码。
 - `src/data_merge_tool/resources/`：QSS 和界面静态资源。
 - `sample/`：用于手动验证读取和合并逻辑的示例数据。
 - `packaging/`：PyInstaller 打包配置。
@@ -52,7 +59,7 @@ data-merge-tool
 ```powershell
 python -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
-  --workpath .\artifacts\build\v2.5.0 `
+  --workpath .\artifacts\build\v2.5.1 `
   .\packaging\build_windows.spec
 ```
 

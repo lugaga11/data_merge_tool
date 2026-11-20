@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, cast
 
@@ -8,7 +9,7 @@ import pandas as pd
 from ..constants import SUPPORTED_EXTENSIONS
 from ..data_types import ReadOptions
 from ..errors import UserVisibleError
-from .detection import delimiter_value, detect_encoding, require_excel_reader, _is_numeric_token, _split_fields
+from .detection import delimiter_value, detect_encoding, _is_numeric_token, _split_fields
 
 
 def natural_sort_key(value: str) -> List[object]:
@@ -26,7 +27,8 @@ def scan_data_files(folder: Path) -> List[str]:
 def coerce_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     for column in list(result.columns):
-        if result[column].dtype == object:
+        dtype = result[column].dtype
+        if dtype == object or isinstance(dtype, pd.StringDtype):
             converted = cast(pd.Series, pd.to_numeric(result[column], errors="coerce"))
             if converted.notna().sum() == result[column].notna().sum():
                 result[column] = converted
@@ -73,22 +75,21 @@ def _combine_wide_whitespace_header_tokens(tokens: Sequence[str], data_width: in
 
     return groups if len(groups) == data_width else None
 
-def _wide_whitespace_header_names(path: Path, options: ReadOptions) -> Optional[List[str]]:
+def _wide_whitespace_header_names(path: Path, options: ReadOptions, encoding: str) -> Optional[List[str]]:
     if not options.has_header or delimiter_value(options.delimiter_label) != r"\s+":
         return None
 
-    encoding = detect_encoding(path, options.encoding_label)
     header_tokens: Optional[List[str]] = None
     data_tokens: List[str] = []
     with path.open("r", encoding=encoding, errors="replace") as handle:
         for index, line in enumerate(handle):
             text = line.rstrip("\r\n")
             if index == options.skip_rows:
-                header_tokens = _split_fields(text, "whitespace")
+                header_tokens = _split_fields(text, r"\s+")
                 continue
             if index <= options.skip_rows:
                 continue
-            data_tokens = _split_fields(text, "whitespace")
+            data_tokens = _split_fields(text, r"\s+")
             if data_tokens:
                 break
 
@@ -110,7 +111,6 @@ def read_table(
 
     try:
         if suffix in {".xlsx", ".xls"}:
-            require_excel_reader(suffix)
             engine = "openpyxl" if suffix == ".xlsx" else "xlrd"
             df = pd.read_excel(
                 path,
@@ -121,21 +121,44 @@ def read_table(
                 usecols=cast(Any, selected_columns),
             )
         else:
-            header_names = _wide_whitespace_header_names(path, options)
+            encoding = detect_encoding(path, options.encoding_label)
+            header_names = _wide_whitespace_header_names(path, options, encoding)
             sep = delimiter_value(options.delimiter_label)
             engine = "python" if sep is None or sep == r"\s+" else "c"
-            df = pd.read_csv(
+            read_csv = partial(
+                pd.read_csv,
                 path,
+                skiprows=options.skip_rows + 1 if header_names is not None else options.skip_rows,
+                sep=sep,
+                encoding=encoding,
+                engine=engine,
+            )
+            header_error = f"{path.name} 的表头列数少于数据列数，请检查表头和行尾分隔符。"
+            if options.has_header and header_names is None:
+                # Parsing the header as a record exposes excess fields before pandas
+                # can turn the first data column into an implicit index or apply usecols.
+                def reject_extra_fields(_fields: list[str]) -> None:
+                    raise UserVisibleError(header_error)
+
+                try:
+                    read_csv(
+                        header=None,
+                        nrows=2,
+                        on_bad_lines=reject_extra_fields if engine == "python" and options.skip_bad_lines else "error",
+                    )
+                except pd.errors.ParserError as exc:
+                    if re.search(r"Expected \d+ fields? in line \d+, saw \d+", str(exc)):
+                        raise UserVisibleError(header_error) from exc
+                    raise
+            df = read_csv(
                 header=None if header_names is not None else header,
                 names=header_names,
-                skiprows=options.skip_rows + 1 if header_names is not None else options.skip_rows,
                 nrows=nrows,
                 usecols=cast(Any, selected_columns),
-                sep=sep,
-                encoding=detect_encoding(path, options.encoding_label),
-                engine=engine,
                 on_bad_lines="skip" if options.skip_bad_lines else "error",
             )
+            if options.has_header and not df.index.identical(pd.RangeIndex(len(df))):
+                raise UserVisibleError(header_error)
             if options.skip_bad_lines:
                 df = drop_malformed_data_rows(df)
     except UserVisibleError:

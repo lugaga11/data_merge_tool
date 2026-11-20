@@ -51,7 +51,7 @@ def _process_image_name(pid: int) -> str:
 
 def visible_origin_window_handles() -> list[tuple[int, str]]:
     if sys.platform != "win32":
-        return [(0, "non-windows")]
+        return []
 
     user32 = ctypes.windll.user32
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
@@ -81,8 +81,6 @@ def visible_origin_window_titles() -> list[str]:
 
 
 def activate_visible_origin_window() -> bool:
-    if sys.platform != "win32":
-        return True
     windows = visible_origin_window_handles()
     if not windows:
         return False

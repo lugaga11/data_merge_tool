@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import time
-from typing import Any, Sequence
+from typing import Any
 
 import pandas as pd
 
@@ -38,15 +38,18 @@ def _wait_for_visible_origin_window(timeout: float = 15.0) -> bool:
     return bool(_visible_origin_windows())
 
 
-def safe_origin_long_name(label: str | None, max_base_length: int = 56) -> str:
+_MAX_BASE_LENGTH = 56
+
+
+def safe_origin_long_name(label: str | None) -> str:
     clean_label = re.sub(r"[\r\n\t]+", " ", label or "")
     clean_label = re.sub(r"\s+", " ", clean_label).strip()
     clean_label = re.sub(r'[\\/:*?"<>|]+', "-", clean_label)
     clean_label = clean_label.strip(" -_.") or "合并数据"
 
-    if len(clean_label) > max_base_length:
-        tail_length = max(8, (max_base_length - 3) // 3)
-        head_length = max_base_length - tail_length - 3
+    if len(clean_label) > _MAX_BASE_LENGTH:
+        tail_length = (_MAX_BASE_LENGTH - 3) // 3
+        head_length = _MAX_BASE_LENGTH - tail_length - 3
         head = clean_label[:head_length].rstrip(" -_.")
         tail = clean_label[-tail_length:].lstrip(" -_.")
         clean_label = f"{head}...{tail}"
@@ -57,10 +60,10 @@ def safe_origin_long_name(label: str | None, max_base_length: int = 56) -> str:
 def _write_dataframe_to_origin(
     op: Any,
     df: pd.DataFrame,
-    axis_spec: str = "",
-    long_names: Sequence[str] | None = None,
-    comments: Sequence[str] | None = None,
-    workbook_label: str | None = None,
+    axis_spec: str,
+    long_names: list[str],
+    comments: list[str],
+    workbook_label: str,
 ) -> str:
     worksheet = op.new_sheet("w", lname=safe_origin_long_name(workbook_label))
     if worksheet is None:
@@ -68,15 +71,13 @@ def _write_dataframe_to_origin(
     worksheet.from_df(df)
     if axis_spec:
         worksheet.cols_axis(axis_spec)
-    if long_names is not None:
-        worksheet.set_labels(list(long_names), "L")
-    if comments is not None:
-        worksheet.set_labels(list(comments), "C")
+    worksheet.set_labels(long_names, "L")
+    worksheet.set_labels(comments, "C")
     worksheet.activate()
 
     book = worksheet.get_book()
-    book_name = getattr(book, "name", "")
-    sheet_name = getattr(worksheet, "name", "")
+    book_name = book.name
+    sheet_name = worksheet.name
     return f"{book_name}/{sheet_name}" if book_name and sheet_name else "Origin 工作簿"
 
 
@@ -136,10 +137,10 @@ class OriginAdapter(OriginStyleFieldsMixin):
     def import_dataframe(
         self,
         df: pd.DataFrame,
-        axis_spec: str = "",
-        long_names: Sequence[str] | None = None,
-        comments: Sequence[str] | None = None,
-        workbook_label: str | None = None,
+        axis_spec: str,
+        long_names: list[str],
+        comments: list[str],
+        workbook_label: str,
     ) -> str:
         op = self.connect(start_if_missing=True)
         try:
@@ -154,8 +155,8 @@ class OriginAdapter(OriginStyleFieldsMixin):
                 f"原始错误：{exc}"
             ) from exc
 
-    def active_context(self, op: Any | None = None) -> str:
-        origin: Any = self._origin() if op is None else op
+    @staticmethod
+    def active_context(origin: Any) -> str:
         pieces: list[str] = []
         try:
             project = str(origin.po.GetProjectName()).strip()
@@ -177,17 +178,14 @@ class OriginAdapter(OriginStyleFieldsMixin):
         suffix = f"当前连接到：{context}。" if context else "未能取得当前连接信息。"
         return OriginAutomationError(f"当前 Origin 活动窗口不是 {expected}。{suffix}请先切到目标 Origin 文件中的对应窗口，再重试。")
 
-    def detach(self, force: bool = False) -> None:
+    def detach(self) -> None:
         if self._op is None:
-            return
-        if not force:
             return
         try:
             self._op.detach()
         finally:
             self._op = None
             self._connected = False
-
 
     def _find_graph(self, op: Any) -> Any:
         try:
@@ -206,6 +204,7 @@ class OriginAdapter(OriginStyleFieldsMixin):
         if worksheet is None:
             raise self._active_window_error(op, "worksheet")
         return worksheet
+
     def scan_active_graph(self) -> GraphInfo:
         op = self.connect()
         graph = self._find_graph(op)
@@ -222,7 +221,7 @@ class OriginAdapter(OriginStyleFieldsMixin):
             )
 
         return GraphInfo(
-            name=getattr(graph, "name", "Active Graph"),
+            name=graph.name,
             layers=layers,
         )
 
@@ -256,7 +255,7 @@ class OriginAdapter(OriginStyleFieldsMixin):
 
     @staticmethod
     def _select_entire_worksheet(worksheet: Any) -> None:
-        column_count = int(getattr(worksheet, "cols", 0))
+        column_count = int(worksheet.cols)
         if column_count <= 0:
             raise OriginAutomationError("当前 worksheet 没有可绘制的列。")
         worksheet.lt_exec(f"worksheet -s 1 0 {column_count} 0;")
@@ -265,7 +264,7 @@ class OriginAdapter(OriginStyleFieldsMixin):
         op = self.connect()
         graph = self._find_graph(op)
         directory.mkdir(parents=True, exist_ok=True)
-        graph_name = getattr(graph, "name", "graph")
+        graph_name = graph.name
         exported: list[Path] = []
         for fmt in formats:
             path = directory / f"{graph_name}.{fmt}"

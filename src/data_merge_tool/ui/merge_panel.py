@@ -128,7 +128,6 @@ class MergePanel(QWidget):
 
         previous_x = int(self.x_column_box.currentData()) if self.x_column_box.count() else 0
         previous_y = set(self.selected_y_columns())
-        had_previous_columns = self.y_column_list.count() > 0
 
         self._updating_columns = True
         try:
@@ -141,8 +140,7 @@ class MergePanel(QWidget):
                 item = QListWidgetItem(label)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setData(USER_ROLE, index)
-                checked_by_default = had_previous_columns and index in previous_y
-                item.setCheckState(CHECKED if checked_by_default else UNCHECKED)
+                item.setCheckState(CHECKED if index in previous_y else UNCHECKED)
                 self.y_column_list.addItem(item)
 
             x_index = previous_x if 0 <= previous_x < self.x_column_box.count() else 0
@@ -185,17 +183,14 @@ class MergePanel(QWidget):
     def current_options(
         self,
         read_options: ReadOptions,
-        show_errors: bool = False,
     ) -> Optional[MergeOptions]:
         if self.x_column_box.count() == 0:
-            if show_errors:
-                QMessageBox.information(self, "提示", "请先添加文件，列选择器会根据当前预览文件自动加载。")
+            QMessageBox.information(self, "提示", "请先添加文件，列选择器会根据当前预览文件自动加载。")
             return None
 
         return MergeOptions(
             read=read_options,
             y_columns=self.selected_y_columns(),
-            y_columns_auto=False,
             keep_single_x=self.keep_x_check.isChecked(),
             x_column=int(self.x_column_box.currentData()) + 1,
             validate_x=self.validate_x_check.isChecked(),
@@ -225,8 +220,6 @@ class MergePanel(QWidget):
         self.options_changed.emit()
 
     def _sync_x_controls(self) -> None:
-        self.x_column_box.setEnabled(True)
-        self.y_column_list.setEnabled(True)
         self.validate_x_check.setEnabled(self.keep_x_check.isChecked())
         self._sync_current_x_check_state()
 
@@ -234,8 +227,6 @@ class MergePanel(QWidget):
         if self.x_column_box.count() == 0:
             return
         x_index = int(self.x_column_box.currentData())
-        if not 0 <= x_index < self.y_column_list.count():
-            return
 
         self._updating_columns = True
         try:

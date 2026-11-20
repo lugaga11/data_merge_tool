@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import (
@@ -9,7 +10,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QLineEdit,
     QMessageBox,
-    QSpinBox,
 )
 
 from .panel_contract import OriginPanelContract
@@ -61,10 +61,8 @@ class OriginPanelActionsMixin(OriginPanelContract):
     def update_enabled_summary(self) -> None:
         count = sum(1 for check in self.path_checks.values() if check.isChecked())
         summary = f"已启用 {count} 项"
-        if hasattr(self, "formatSummaryLabel"):
-            self.formatSummaryLabel.setText(summary)
-        if hasattr(self, "actionContextLabel"):
-            self.actionContextLabel.setText(f"目标：{self.target_description()} · {summary}")
+        self.formatSummaryLabel.setText(summary)
+        self.actionContextLabel.setText(f"目标：{self.target_description()} · {summary}")
 
     def selected_layer_indices(self) -> tuple[str, list[int]]:
         if self.allLayersRadio.isChecked():
@@ -151,9 +149,7 @@ class OriginPanelActionsMixin(OriginPanelContract):
         _scope, indices = self.selected_layer_indices()
         layer_index = indices[0] if indices else 1
 
-        def finish(result: object) -> None:
-            if not isinstance(result, dict):
-                raise TypeError("Origin worker 没有返回有效样式。")
+        def finish(result: dict[str, Any]) -> None:
             self.apply_readback_style(result)
             self.set_status(f"已读取 Layer {layer_index} 的可回读设置；未自动启用任何格式项。")
 
@@ -164,76 +160,68 @@ class OriginPanelActionsMixin(OriginPanelContract):
             "读取设置失败",
         )
 
-    def apply_readback_style(self, style: dict[str, object]) -> None:
-        page = style.get("page", {})
-        if isinstance(page, dict):
-            self.set_spin_if_number(self.pageWidthSpin, page.get("width_in"))
-            self.set_spin_if_number(self.pageHeightSpin, page.get("height_in"))
-            if page.get("anti_alias") is not None:
-                self.pageAntiAliasCheck.setChecked(bool(page.get("anti_alias")))
+    def apply_readback_style(self, style: dict[str, Any]) -> None:
+        page = style["page"]
+        self.set_spin_if_number(self.pageWidthSpin, page["width_in"])
+        self.set_spin_if_number(self.pageHeightSpin, page["height_in"])
+        if page["anti_alias"] is not None:
+            self.pageAntiAliasCheck.setChecked(bool(page["anti_alias"]))
 
-        layer = style.get("layer", {})
-        if isinstance(layer, dict):
-            self.set_spin_if_number(self.layerLeftSpin, layer.get("left_in"))
-            self.set_spin_if_number(self.layerTopSpin, layer.get("top_in"))
-            self.set_spin_if_number(self.layerWidthSpin, layer.get("width_in"))
-            self.set_spin_if_number(self.layerHeightSpin, layer.get("height_in"))
-            self.set_spin_if_number(self.layerLineWidthSpin, layer.get("line_width_pt"))
-            self.set_spin_if_number(self.scaleFactorSpin, layer.get("scale_factor"))
-            if layer.get("scale_fixed") is not None:
-                self.scaleFixedCheck.setChecked(bool(layer.get("scale_fixed")))
-            frame = layer.get("frame")
-            if isinstance(frame, dict):
-                self.frameLeftCheck.setChecked(bool(frame.get("left", True)))
-                self.frameBottomCheck.setChecked(bool(frame.get("bottom", True)))
-                self.frameTopCheck.setChecked(bool(frame.get("top", True)))
-                self.frameRightCheck.setChecked(bool(frame.get("right", True)))
+        layer = style["layer"]
+        self.set_spin_if_number(self.layerLeftSpin, layer["left_in"])
+        self.set_spin_if_number(self.layerTopSpin, layer["top_in"])
+        self.set_spin_if_number(self.layerWidthSpin, layer["width_in"])
+        self.set_spin_if_number(self.layerHeightSpin, layer["height_in"])
+        self.set_spin_if_number(self.layerLineWidthSpin, layer["line_width_pt"])
+        self.set_spin_if_number(self.scaleFactorSpin, layer["scale_factor"])
+        if layer["scale_fixed"] is not None:
+            self.scaleFixedCheck.setChecked(bool(layer["scale_fixed"]))
+        frame = layer["frame"]
+        for key, checkbox in (
+            ("left", self.frameLeftCheck), ("bottom", self.frameBottomCheck),
+            ("top", self.frameTopCheck), ("right", self.frameRightCheck),
+        ):
+            if frame[key] is not None:
+                checkbox.setChecked(frame[key])
 
-        text = style.get("text", {})
-        if isinstance(text, dict):
-            self.xTitleEdit.setText(self._display_text_to_edit_text(str(text.get("x_title") or "")))
-            self.yTitleEdit.setText(self._display_text_to_edit_text(str(text.get("y_title") or "")))
-            self.legendTextEdit.setText(
-                self._legend_readback_to_edit_text(
-                    str(text.get("legend_text") or ""),
-                    str(text.get("legend_text_raw") or ""),
-                )
+        text = style["text"]
+        self.xTitleEdit.setText(self._display_text_to_edit_text(str(text["x_title"] or "")))
+        self.yTitleEdit.setText(self._display_text_to_edit_text(str(text["y_title"] or "")))
+        self.legendTextEdit.setText(
+            self._legend_readback_to_edit_text(
+                str(text["legend_text"] or ""),
+                str(text["legend_text_raw"] or ""),
             )
-            self.set_spin_if_number(self.axisTitleSizeSpin, text.get("title_font_size_pt"))
-            self.set_spin_if_number(self.axisTickSizeSpin, text.get("tick_font_size_pt"))
-            self.set_spin_if_number(self.legendFontSizeSpin, text.get("legend_font_size_pt"))
+        )
+        self.set_spin_if_number(self.axisTitleSizeSpin, text["title_font_size_pt"])
+        self.set_spin_if_number(self.axisTickSizeSpin, text["tick_font_size_pt"])
+        self.set_spin_if_number(self.legendFontSizeSpin, text["legend_font_size_pt"])
 
-        axis = style.get("axis", {})
-        if isinstance(axis, dict):
-            if axis.get("x_scale") in {"keep", "linear", "log10"}:
-                self._set_combo_value(self.xScaleCombo, axis.get("x_scale"))
-            if axis.get("y_scale") in {"keep", "linear", "log10"}:
-                self._set_combo_value(self.yScaleCombo, axis.get("y_scale"))
-            if axis.get("show_grid") is not None:
-                self.gridCheck.setChecked(bool(axis.get("show_grid")))
+        axis = style["axis"]
+        if axis["x_scale"] in {"keep", "linear", "log10"}:
+            self._set_combo_value(self.xScaleCombo, axis["x_scale"])
+        if axis["y_scale"] in {"keep", "linear", "log10"}:
+            self._set_combo_value(self.yScaleCombo, axis["y_scale"])
+        if axis["show_grid"] is not None:
+            self.gridCheck.setChecked(bool(axis["show_grid"]))
 
-        plot = style.get("plot", {})
-        if isinstance(plot, dict):
-            self.set_spin_if_number(self.lineWidthSpin, plot.get("line_width_pt"))
-            self.set_spin_if_number(self.symbolSizeSpin, plot.get("symbol_size_pt"))
+        plot = style["plot"]
+        self.set_spin_if_number(self.lineWidthSpin, plot["line_width_pt"])
+        self.set_spin_if_number(self.symbolSizeSpin, plot["symbol_size_pt"])
 
-        legend = style.get("legend", {})
-        if isinstance(legend, dict):
-            visibility = legend.get("visibility")
-            if visibility == 1:
-                self._set_combo_value(self.legendVisibilityCombo, "show")
-            elif visibility == 0:
-                self._set_combo_value(self.legendVisibilityCombo, "hide")
-            if legend.get("frame") is not None:
-                self.legendFrameCheck.setChecked(bool(legend.get("frame")))
+        legend = style["legend"]
+        visibility = legend["visibility"]
+        if visibility == 1:
+            self._set_combo_value(self.legendVisibilityCombo, "show")
+        elif visibility == 0:
+            self._set_combo_value(self.legendVisibilityCombo, "hide")
+        if legend["frame"] is not None:
+            self.legendFrameCheck.setChecked(bool(legend["frame"]))
 
     @staticmethod
-    def set_spin_if_number(spin: QDoubleSpinBox | QSpinBox, value: object) -> None:
+    def set_spin_if_number(spin: QDoubleSpinBox, value: object) -> None:
         if isinstance(value, (int, float)):
-            if isinstance(spin, QSpinBox):
-                spin.setValue(int(value))
-            else:
-                spin.setValue(float(value))
+            spin.setValue(float(value))
 
     def active_text_editor(self) -> QLineEdit | None:
         widget = QApplication.focusWidget()
@@ -303,12 +291,8 @@ class OriginPanelActionsMixin(OriginPanelContract):
             self.show_error("应用失败", exc)
             return
 
-        def finish(result: object) -> None:
-            if not isinstance(result, tuple) or len(result) != 2:
-                raise TypeError("Origin worker returned an invalid apply result.")
+        def finish(result: tuple[StyleSnapshot, ApplyResult]) -> None:
             snapshot, apply_result = result
-            if not isinstance(snapshot, StyleSnapshot) or not isinstance(apply_result, ApplyResult):
-                raise TypeError("Origin worker 没有返回有效应用结果。")
             self.last_apply_snapshot = snapshot
             message = (
                 f"已应用 {len(apply_result.applied)} 项到 {apply_result.target_name} / Layer {apply_result.layer_indices}，"
@@ -332,9 +316,7 @@ class OriginPanelActionsMixin(OriginPanelContract):
             return
         snapshot = self.last_apply_snapshot
 
-        def finish(result: object) -> None:
-            if not isinstance(result, ApplyResult):
-                raise TypeError("Origin worker 没有返回有效撤销结果。")
+        def finish(result: ApplyResult) -> None:
             self.last_apply_snapshot = None
             message = (
                 f"已撤销 {len(result.applied)} 项到 {result.target_name} / Layer {result.layer_indices}；"
@@ -378,10 +360,7 @@ class OriginPanelActionsMixin(OriginPanelContract):
         self.exportDirEdit.setText(str(directory))
         width_px = self.exportWidthSpin.value()
 
-        def finish(result: object) -> None:
-            if not isinstance(result, list):
-                raise TypeError("Origin worker 没有返回有效导出路径。")
-            files = [Path(path) for path in result]
+        def finish(files: list[Path]) -> None:
             self.set_status("已导出：" + "; ".join(str(path) for path in files))
 
         self.start_origin_task(

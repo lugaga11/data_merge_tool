@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -18,7 +19,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -28,7 +28,7 @@ from .panel_presets import OriginPanelPresetsMixin
 from .protocol import GraphInfo, OriginWorkerError, StyleSnapshot
 from .presets import DEFAULT_EXPORT_DIR, USER_PRESETS_PATH, PresetStore
 from .style_registry import STYLE_FIELDS
-from ..ui.task_runner import TaskRunner, TaskSpec
+from ..ui.task_runner import TaskResult, TaskRunner, TaskSpec
 from ..ui.controls import (
     NoWheelComboBox,
     NoWheelDoubleSpinBox,
@@ -56,29 +56,24 @@ LEGEND_POSITION_OPTIONS = (
 
 
 class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
+    status_message = Signal(str, int)
+
     def __init__(
         self,
-        origin_client: OriginWorkerClient | None = None,
-        task_runner: TaskRunner | None = None,
+        origin_client: OriginWorkerClient,
+        task_runner: TaskRunner,
     ) -> None:
         super().__init__()
 
-        self.origin_client = origin_client or OriginWorkerClient()
-        self._owns_origin_client = origin_client is None
-        self.task_runner = task_runner or TaskRunner(
-            self,
-            busy_changed=lambda busy: self.setEnabled(not busy),
-            message_handler=lambda message, timeout=0: self.set_status(message, timeout),
-            error_handler=self._handle_origin_task_error,
-            queue_when_busy=True,
-        )
+        self.origin_client = origin_client
+        self.task_runner = task_runner
         self.path_checks: dict[str, QCheckBox] = {}
         self.last_text_editor: QLineEdit | None = None
         self.last_text_selection: dict[QLineEdit, tuple[int, int, str]] = {}
         self.preset_store = PresetStore(USER_PRESETS_PATH)
         preset_load = self.preset_store.load()
         self.user_presets: dict[str, dict[str, Any]] = preset_load.presets
-        self._preset_load_warning = preset_load.warning
+        self.preset_load_warning = preset_load.warning
         self.last_apply_snapshot: StyleSnapshot | None = None
 
         self._build_ui()
@@ -86,10 +81,6 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         if self.presetCombo.count():
             self.load_preset_values(self.presetCombo.currentText())
         self.clear_enabled_checks(show_status=False)
-        if self._preset_load_warning:
-            self.set_status(self._preset_load_warning, 10000)
-        else:
-            self.set_status("Origin 绘图面板已就绪；需要时再连接 Origin。")
 
     def _build_ui(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -156,18 +147,6 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         return form
 
-    def _side_row(self, *widgets: QWidget, expand: QWidget | None = None) -> QWidget:
-        row = QWidget()
-        row.setObjectName("InlineCluster")
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        for widget in widgets:
-            layout.addWidget(widget, 1 if widget is expand else 0)
-        if expand is None:
-            layout.addStretch(1)
-        return row
-
     def _build_plot_card(self) -> QWidget:
         card, layout = self._side_card("当前选区绘图", "从活动 worksheet 的当前选区快速生成图。")
         form = self._side_form()
@@ -182,8 +161,6 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         card, layout = self._side_card("当前图", "同步图层后再读取样式，目标会更准确。")
         sync_button = make_button("同步图层", lambda: self.refresh_graph(), role="secondary")
         read_button = make_button("读取样式", self.read_current_style, role="quiet")
-        sync_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        read_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         graph_actions = QWidget()
         graph_actions.setObjectName("InlineCluster")
         graph_action_layout = QHBoxLayout(graph_actions)
@@ -204,6 +181,9 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.allLayersRadio = QRadioButton("全部图层")
         self.singleLayerRadio = QRadioButton("单个图层")
         self.customLayersRadio = QRadioButton("自定义多选")
+        scope_group = QButtonGroup(card)
+        for radio in (self.allLayersRadio, self.singleLayerRadio, self.customLayersRadio):
+            scope_group.addButton(radio)
         self.singleLayerRadio.setChecked(True)
         self.layerCombo = NoWheelComboBox()
         self.customLayersEdit = QLineEdit()
@@ -214,8 +194,8 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.layerCombo.currentIndexChanged.connect(self.update_enabled_summary)
         self.customLayersEdit.textChanged.connect(self.update_enabled_summary)
         layout.addWidget(self.allLayersRadio)
-        layout.addWidget(self._side_row(self.singleLayerRadio, self.layerCombo, expand=self.layerCombo))
-        layout.addWidget(self._side_row(self.customLayersRadio, self.customLayersEdit, expand=self.customLayersEdit))
+        layout.addWidget(self._cluster(self.singleLayerRadio, self.layerCombo, expand=self.layerCombo))
+        layout.addWidget(self._cluster(self.customLayersRadio, self.customLayersEdit, expand=self.customLayersEdit))
         return card
 
     def _build_preset_card(self) -> QWidget:
@@ -238,7 +218,6 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
             make_button("导出 JSON", self.export_selected_preset_json, role="quiet"),
         ]
         for index, button in enumerate(buttons):
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             action_grid.addWidget(button, index // 2, index % 2)
         action_grid.setColumnStretch(0, 1)
         action_grid.setColumnStretch(1, 1)
@@ -250,7 +229,7 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.exportDirEdit = QLineEdit(str(DEFAULT_EXPORT_DIR))
         self.exportDirEdit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(
-            self._side_row(
+            self._cluster(
                 self.exportDirEdit,
                 make_button("选择", self.choose_export_dir, role="quiet"),
                 expand=self.exportDirEdit,
@@ -277,7 +256,7 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.exportWidthSpin.setValue(2400)
         self._fit_input(self.exportWidthSpin, 104)
         layout.addWidget(
-            self._side_row(
+            self._cluster(
                 self._label("宽度"),
                 self.exportWidthSpin,
                 self._label("px"),
@@ -405,27 +384,13 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
     def _add_setting(
         self,
         grid: QGridLayout,
-        row: int,
-        column: int,
         path: str,
         label: str,
         controls: QWidget,
     ) -> None:
-        effective_row = row * 2 + column
-        grid.addWidget(self._path_check(label, path), effective_row, 0)
-        grid.addWidget(controls, effective_row, 1)
-
-    def _add_wide_setting(
-        self,
-        grid: QGridLayout,
-        row: int,
-        path: str,
-        label: str,
-        controls: QWidget,
-    ) -> None:
-        effective_row = row * 2
-        grid.addWidget(self._path_check(label, path), effective_row, 0)
-        grid.addWidget(controls, effective_row, 1)
+        row = grid.rowCount() if grid.count() else 0
+        grid.addWidget(self._path_check(label, path), row, 0)
+        grid.addWidget(controls, row, 1)
 
     @staticmethod
     def _add_combo_options(combo: QComboBox, options: tuple[tuple[str, str], ...]) -> None:
@@ -487,16 +452,12 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.pageAntiAliasCheck = QCheckBox("启用")
         self._add_setting(
             grid,
-            0,
-            0,
             "page.size_in",
             "画布尺寸",
             self._cluster(self._label("宽"), self.pageWidthSpin, self._label("高"), self.pageHeightSpin, self._label("in")),
         )
         self._add_setting(
             grid,
-            0,
-            1,
             "page.anti_alias",
             "抗锯齿",
             self._cluster(self.pageAntiAliasCheck),
@@ -510,9 +471,8 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.layerTopSpin = self._float_spin(0.24, 0.0, 100.0, width=104)
         self.layerWidthSpin = self._float_spin(2.60, 0.1, 100.0, width=104)
         self.layerHeightSpin = self._float_spin(1.89, 0.1, 100.0, width=104)
-        self._add_wide_setting(
+        self._add_setting(
             grid,
-            0,
             "layer.geometry_in",
             "位置/大小",
             self._field_grid(
@@ -535,23 +495,18 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.scaleFactorSpin = self._float_spin(1.0, 0.01, 100.0, 0.01, width=104)
         self._add_setting(
             grid,
-            1,
-            0,
             "layer.frame",
             "边框",
             self._cluster(self.frameLeftCheck, self.frameBottomCheck, self.frameTopCheck, self.frameRightCheck),
         )
         self._add_setting(
             grid,
-            1,
-            1,
             "layer.line_width_pt",
             "轴线宽",
             self._cluster(self.layerLineWidthSpin, self._label("pt")),
         )
-        self._add_wide_setting(
+        self._add_setting(
             grid,
-            2,
             "layer.scale_elements",
             "元素缩放",
             self._cluster(self.scaleFixedCheck, self._label("因子"), self.scaleFactorSpin),
@@ -568,9 +523,9 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self._add_combo_options(self.yScaleCombo, SCALE_OPTIONS)
         self._fit_input(self.yScaleCombo, 136)
         self.gridCheck = QCheckBox("显示主网格")
-        self._add_setting(grid, 0, 0, "axis.x_scale", "X 类型", self._cluster(self.xScaleCombo))
-        self._add_setting(grid, 0, 1, "axis.y_scale", "Y 类型", self._cluster(self.yScaleCombo))
-        self._add_wide_setting(grid, 1, "axis.grid", "网格", self._cluster(self.gridCheck))
+        self._add_setting(grid, "axis.x_scale", "X 类型", self._cluster(self.xScaleCombo))
+        self._add_setting(grid, "axis.y_scale", "Y 类型", self._cluster(self.yScaleCombo))
+        self._add_setting(grid, "axis.grid", "网格", self._cluster(self.gridCheck))
         return box
 
     def _build_plot_group(self) -> QGroupBox:
@@ -578,8 +533,8 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         grid = self._format_grid(box)
         self.lineWidthSpin = self._float_spin(1.2, 0.1, 20.0, 0.1, width=104)
         self.symbolSizeSpin = self._float_spin(4.0, 0.1, 100.0, 0.5, width=104)
-        self._add_setting(grid, 0, 0, "plot.line_width_pt", "线宽", self._cluster(self.lineWidthSpin, self._label("pt")))
-        self._add_setting(grid, 0, 1, "plot.symbol_size_pt", "符号大小", self._cluster(self.symbolSizeSpin, self._label("pt")))
+        self._add_setting(grid, "plot.line_width_pt", "线宽", self._cluster(self.lineWidthSpin, self._label("pt")))
+        self._add_setting(grid, "plot.symbol_size_pt", "符号大小", self._cluster(self.symbolSizeSpin, self._label("pt")))
         return box
 
     def _build_text_group(self) -> QGroupBox:
@@ -594,23 +549,18 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self._track_text_editor(self.legendTextEdit)
         self._add_setting(
             grid,
-            0,
-            0,
             "text.x_title",
             "X 标题",
             self._cluster(self._fill_input(self.xTitleEdit), expand=self.xTitleEdit),
         )
         self._add_setting(
             grid,
-            0,
-            1,
             "text.y_title",
             "Y 标题",
             self._cluster(self._fill_input(self.yTitleEdit), expand=self.yTitleEdit),
         )
-        self._add_wide_setting(
+        self._add_setting(
             grid,
-            1,
             "text.legend_text",
             "图例文本",
             self._cluster(self._fill_input(self.legendTextEdit), expand=self.legendTextEdit),
@@ -622,31 +572,26 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
             make_button("上标", self.insert_superscript, keep_text_focus=True, role="quiet"),
             make_button("下标", self.insert_subscript, keep_text_focus=True, role="quiet"),
         )
-        grid.addWidget(self._label("文本格式"), 5, 0)
-        grid.addWidget(format_row, 5, 1)
+        row = grid.rowCount()
+        grid.addWidget(self._label("文本格式"), row, 0)
+        grid.addWidget(format_row, row, 1)
         self.axisTitleSizeSpin = self._float_spin(8.0, 1.0, 72.0, 0.5, width=104)
         self.axisTickSizeSpin = self._float_spin(7.0, 1.0, 72.0, 0.5, width=104)
         self.legendFontSizeSpin = self._float_spin(7.0, 1.0, 72.0, 0.5, width=104)
         self._add_setting(
             grid,
-            3,
-            0,
             "text.title_size_pt",
             "标题字号",
             self._cluster(self.axisTitleSizeSpin, self._label("pt")),
         )
         self._add_setting(
             grid,
-            4,
-            0,
             "text.tick_size_pt",
             "刻度字号",
             self._cluster(self.axisTickSizeSpin, self._label("pt")),
         )
         self._add_setting(
             grid,
-            4,
-            1,
             "text.legend_size_pt",
             "图例字号",
             self._cluster(self.legendFontSizeSpin, self._label("pt")),
@@ -663,36 +608,26 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.legendPositionCombo = NoWheelComboBox()
         self._add_combo_options(self.legendPositionCombo, LEGEND_POSITION_OPTIONS)
         self._fit_input(self.legendPositionCombo, 170)
-        self._add_setting(grid, 0, 0, "legend.visibility", "显示", self._cluster(self.legendVisibilityCombo))
-        self._add_setting(grid, 0, 1, "legend.frame", "边框", self._cluster(self.legendFrameCheck))
-        self._add_wide_setting(grid, 1, "legend.position", "位置", self._cluster(self.legendPositionCombo))
+        self._add_setting(grid, "legend.visibility", "显示", self._cluster(self.legendVisibilityCombo))
+        self._add_setting(grid, "legend.frame", "边框", self._cluster(self.legendFrameCheck))
+        self._add_setting(grid, "legend.position", "位置", self._cluster(self.legendPositionCombo))
         return box
 
     def start_origin_task(
         self,
         message: str,
-        work: Callable[[], object],
-        on_success: Callable[[object], None],
+        work: Callable[[], TaskResult],
+        on_success: Callable[[TaskResult], None],
         error_title: str,
     ) -> bool:
         return self.task_runner.run(TaskSpec(message=message, error_title=error_title), work, on_success)
 
-    def _handle_origin_task_error(self, spec: TaskSpec, error: object) -> None:
-        self.show_error(spec.error_title, error if isinstance(error, Exception) else RuntimeError(str(error)))
-
-    def has_active_origin_task(self) -> bool:
-        return self.task_runner.has_active_task()
-
     def plot_active_sheet(self) -> None:
         plot_kind = self.plotKindCombo.currentText()
 
-        def finish(result: object) -> None:
-            if not isinstance(result, tuple) or len(result) != 2:
-                raise TypeError("Origin worker returned an invalid plot result.")
+        def finish(result: tuple[str, GraphInfo]) -> None:
             message, graph = result
-            if not isinstance(graph, GraphInfo):
-                raise TypeError("Origin worker 没有返回有效图信息。")
-            self.set_status(str(message))
+            self.set_status(message)
             self.update_graph_info(graph, update_status=False)
 
         self.start_origin_task(
@@ -703,9 +638,7 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         )
 
     def refresh_graph(self) -> None:
-        def finish(result: object) -> None:
-            if not isinstance(result, GraphInfo):
-                raise TypeError("Origin worker 没有返回有效图信息。")
+        def finish(result: GraphInfo) -> None:
             self.update_graph_info(result, update_status=True)
 
         self.start_origin_task(
@@ -736,12 +669,7 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         self.update_enabled_summary()
 
     def set_status(self, message: str, timeout_ms: int = 6000) -> None:
-        window = self.window()
-        status_bar_getter = getattr(window, "statusBar", None)
-        if callable(status_bar_getter):
-            status_bar = status_bar_getter()
-            if isinstance(status_bar, QStatusBar):
-                status_bar.showMessage(message, timeout_ms)
+        self.status_message.emit(message, timeout_ms)
 
     def show_error(self, title: str, exc: Exception) -> None:
         message = str(exc)
@@ -759,7 +687,3 @@ class OriginPanelWidget(OriginPanelPresetsMixin, OriginPanelActionsMixin):
         finally:
             if wait_cursor_active:
                 QApplication.restoreOverrideCursor()
-
-    def detach(self) -> None:
-        if self._owns_origin_client:
-            self.origin_client.shutdown()

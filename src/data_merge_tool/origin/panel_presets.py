@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -28,14 +27,12 @@ class OriginPanelPresetsMixin(OriginPanelContract):
         return True
 
     def all_presets(self) -> dict[str, dict[str, Any]]:
-        combined = deepcopy(PRESETS)
-        combined.update(deepcopy(self.user_presets))
-        return combined
+        return PRESETS | self.user_presets
 
     def refresh_preset_combo(self, selected: str | None = None) -> None:
         current = selected or self.presetCombo.currentText()
         self.presetCombo.clear()
-        self.presetCombo.addItems(list(self.all_presets().keys()))
+        self.presetCombo.addItems(list(self.all_presets()))
         index = self.presetCombo.findText(current)
         if index >= 0:
             self.presetCombo.setCurrentIndex(index)
@@ -96,8 +93,7 @@ class OriginPanelPresetsMixin(OriginPanelContract):
         if name in PRESETS:
             QMessageBox.information(self, "内置预设", "内置预设不能覆盖，请换一个名称。")
             return
-        candidate = deepcopy(self.user_presets)
-        candidate[name] = self.current_preset_values()
+        candidate = self.user_presets | {name: self.current_preset_values()}
         if not self.write_user_presets(candidate):
             return
         self.user_presets = candidate
@@ -114,7 +110,7 @@ class OriginPanelPresetsMixin(OriginPanelContract):
         answer = QMessageBox.question(self, "删除预设", f"确定删除自定义预设“{name}”吗？")
         if answer != QMessageBox.StandardButton.Yes:
             return
-        candidate = deepcopy(self.user_presets)
+        candidate = self.user_presets.copy()
         candidate.pop(name)
         if not self.write_user_presets(candidate):
             return
@@ -131,8 +127,7 @@ class OriginPanelPresetsMixin(OriginPanelContract):
             imported = {name: preset for name, preset in result.presets.items() if name not in PRESETS}
             if not imported:
                 raise ValueError("没有可导入的自定义预设")
-            candidate = deepcopy(self.user_presets)
-            candidate.update(imported)
+            candidate = self.user_presets | imported
             if not self.write_user_presets(candidate):
                 return
             self.user_presets = candidate
@@ -170,11 +165,11 @@ class OriginPanelPresetsMixin(OriginPanelContract):
         self.set_status(f"已导出预设：{target}")
 
     def load_preset_values(self, name: str) -> None:
-        preset = self.preset_store.validate(deepcopy(self.all_presets()[name]))
+        preset = self.user_presets[name] if name in self.user_presets else self.preset_store.validate(PRESETS[name])
         page = preset["page"]
         self.pageWidthSpin.setValue(page["width_in"])
         self.pageHeightSpin.setValue(page["height_in"])
-        self.pageAntiAliasCheck.setChecked(page.get("anti_alias", False))
+        self.pageAntiAliasCheck.setChecked(page["anti_alias"])
         layer = preset["layer"]
         self.layerLeftSpin.setValue(layer["left_in"])
         self.layerTopSpin.setValue(layer["top_in"])
@@ -186,8 +181,8 @@ class OriginPanelPresetsMixin(OriginPanelContract):
         self.frameTopCheck.setChecked(frame["top"])
         self.frameRightCheck.setChecked(frame["right"])
         self.layerLineWidthSpin.setValue(layer["line_width_pt"])
-        self.scaleFixedCheck.setChecked(layer.get("scale_fixed", False))
-        self.scaleFactorSpin.setValue(layer.get("scale_factor", 1.0))
+        self.scaleFixedCheck.setChecked(layer["scale_fixed"])
+        self.scaleFactorSpin.setValue(layer["scale_factor"])
         plot = preset["plot"]
         self.lineWidthSpin.setValue(plot["line_width_pt"])
         self.symbolSizeSpin.setValue(plot["symbol_size_pt"])
@@ -212,4 +207,4 @@ class OriginPanelPresetsMixin(OriginPanelContract):
         self.exportPdfCheck.setChecked("pdf" in export["formats"])
         self.exportSvgCheck.setChecked("svg" in export["formats"])
         self.exportTiffCheck.setChecked("tiff" in export["formats"])
-        self.apply_enabled_paths(preset.get("enabled_paths", []))
+        self.apply_enabled_paths(preset["enabled_paths"])

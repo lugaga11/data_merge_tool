@@ -34,13 +34,6 @@ def resource_path(name: str) -> Path:
     return Path(__file__).resolve().parent / "resources" / name
 
 
-CHECKMARK_ICON = resource_path("ui_checkmark.svg").as_posix()
-
-EXCEL_READER_DEPENDENCIES = {
-    ".xlsx": ("openpyxl", "3.1", "openpyxl>=3.1", "Excel .xlsx"),
-    ".xls": ("xlrd", "2.0.1", "xlrd>=2.0.1", "旧版 Excel .xls"),
-}
-
 DISPLAY_ROLE = Qt.ItemDataRole.DisplayRole
 TEXT_ALIGNMENT_ROLE = Qt.ItemDataRole.TextAlignmentRole
 HORIZONTAL = Qt.Orientation.Horizontal

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from io import TextIOWrapper
+from dataclasses import asdict
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -12,8 +12,6 @@ from ..errors import UserVisibleError
 from .automation import OriginAdapter
 from .protocol import (
     OriginAutomationError,
-    apply_result_to_dict,
-    graph_info_to_dict,
     patch_from_dict,
     paths_to_dict,
     snapshot_from_dict,
@@ -38,51 +36,49 @@ def dispatch(adapter: OriginAdapter, command: str, payload: dict[str, Any]) -> A
     if command == "ping":
         return {"status": "ok"}
     if command == "shutdown":
-        adapter.detach(force=True)
+        adapter.detach()
         return {"status": "bye"}
     if command == "release_origin":
-        adapter.detach(force=True)
+        adapter.detach()
         return {"status": "released"}
     if command == "import_dataframe":
-        df = cast(pd.DataFrame, pd.read_pickle(Path(str(payload["pickle_path"]))))
+        df = cast(pd.DataFrame, pd.read_pickle(Path(payload["pickle_path"])))
         return adapter.import_dataframe(
             df,
-            str(payload.get("axis_spec", "")),
-            [str(value) for value in payload.get("long_names", [])],
-            [str(value) for value in payload.get("comments", [])],
-            str(payload.get("workbook_label", "")),
+            payload["axis_spec"],
+            payload["long_names"],
+            payload["comments"],
+            payload["workbook_label"],
         )
     if command == "plot_active_sheet":
-        message = adapter.plot_active_sheet(str(payload.get("plot_kind", "")))
+        message = adapter.plot_active_sheet(payload["plot_kind"])
         graph = adapter.scan_active_graph()
-        return {"message": message, "graph": graph_info_to_dict(graph)}
+        return {"message": message, "graph": asdict(graph)}
     if command == "scan_active_graph":
-        return graph_info_to_dict(adapter.scan_active_graph())
+        return asdict(adapter.scan_active_graph())
     if command == "read_active_layer_style":
-        return adapter.read_active_layer_style(int(payload.get("layer_index", 1)))
+        return adapter.read_active_layer_style(payload["layer_index"])
     if command == "apply_patch":
-        patch = patch_from_dict(dict(payload["patch"]))
+        patch = patch_from_dict(payload["patch"])
         snapshot = adapter.read_style_snapshot(patch)
         result = adapter.apply_style_patch(patch)
-        return {"snapshot": snapshot_to_dict(snapshot), "result": apply_result_to_dict(result)}
+        return {"snapshot": snapshot_to_dict(snapshot), "result": asdict(result)}
     if command == "restore_style_snapshot":
-        snapshot = snapshot_from_dict(dict(payload["snapshot"]))
-        return apply_result_to_dict(adapter.restore_style_snapshot(snapshot))
+        snapshot = snapshot_from_dict(payload["snapshot"])
+        return asdict(adapter.restore_style_snapshot(snapshot))
     if command == "export_active_graph":
         files = adapter.export_active_graph(
-            Path(str(payload["directory"])),
-            [str(fmt) for fmt in payload.get("formats", [])],
-            int(payload.get("width_px", 2400)),
+            Path(payload["directory"]),
+            payload["formats"],
+            payload["width_px"],
         )
         return paths_to_dict(files)
     raise OriginAutomationError(f"未知 Origin worker 命令：{command}")
 
 
 def main() -> int:
-    stdin = cast(TextIOWrapper, sys.stdin)
-    stdout = cast(TextIOWrapper, sys.stdout)
-    stdin.reconfigure(encoding="utf-8", errors="replace")
-    stdout.reconfigure(encoding="utf-8", errors="strict")
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
 
     adapter = OriginAdapter()
     for raw_line in stdin:
@@ -93,9 +89,9 @@ def main() -> int:
         command = ""
         try:
             request = json.loads(line)
-            request_id = request.get("id")
-            command = str(request.get("command", ""))
-            payload = request.get("payload") or {}
+            request_id = request["id"]
+            command = request["command"]
+            payload = request["payload"]
             if not isinstance(payload, dict):
                 raise OriginAutomationError("Origin worker payload 必须是对象。")
             result = dispatch(adapter, command, payload)
@@ -108,7 +104,7 @@ def main() -> int:
                     "message": _error_message(exc),
                 },
             }
-        stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
+        stdout.write(json.dumps(response, ensure_ascii=True).encode("ascii") + b"\n")
         stdout.flush()
         if command == "shutdown":
             break

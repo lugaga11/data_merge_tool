@@ -163,11 +163,11 @@ class FileQueuePanel(QWidget):
         item = self._preview_reference_item()
         return None if item is None else Path(str(item.data(USER_ROLE)))
 
-    def add_paths(self, paths: Sequence[str], sort_input: bool = True) -> None:
+    def add_paths(self, paths: Sequence[str]) -> None:
         existing = set(self.all_paths())
         added = 0
         skipped = 0
-        ordered_paths = sorted(paths, key=natural_sort_key) if sort_input else list(paths)
+        ordered_paths = sorted(paths, key=natural_sort_key)
 
         self._updating = True
         previous_blocked = self.file_list.blockSignals(True)
@@ -221,7 +221,7 @@ class FileQueuePanel(QWidget):
         sorted_paths = sorted(
             paths,
             key=lambda path: (
-                source_label_sort_key(source_labels.get(path, Path(path).stem)),
+                source_label_sort_key(source_labels[path]),
                 natural_sort_key(Path(path).name),
             ),
         )
@@ -295,11 +295,10 @@ class FileQueuePanel(QWidget):
 
     def _open_source_file(self, item: QListWidgetItem) -> None:
         path = Path(str(item.data(USER_ROLE)))
-        if not path.exists():
-            QMessageBox.warning(self, "无法打开", f"文件不存在：\n{path}")
-            return
         try:
             os.startfile(path)
+        except FileNotFoundError:
+            QMessageBox.warning(self, "无法打开", f"文件不存在：\n{path}")
         except OSError as exc:
             QMessageBox.critical(self, "无法打开", f"{path}\n\n{exc}")
 

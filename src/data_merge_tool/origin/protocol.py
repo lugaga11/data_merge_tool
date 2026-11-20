@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +31,8 @@ class GraphInfo:
 
 @dataclass
 class PatchTarget:
-    layer_scope: str = "all"
-    layer_indices: list[int] = field(default_factory=list)
+    layer_scope: str
+    layer_indices: list[int]
 
 
 @dataclass(kw_only=True)
@@ -63,40 +63,16 @@ class StyleSnapshot:
     styles: dict[int, dict[str, Any]]
 
 
-def layer_info_to_dict(info: LayerInfo) -> dict[str, Any]:
-    return {
-        "index": info.index,
-        "plot_count": info.plot_count,
-    }
-
-
-def layer_info_from_dict(data: dict[str, Any]) -> LayerInfo:
-    return LayerInfo(
-        index=int(data["index"]),
-        plot_count=int(data["plot_count"]),
-    )
-
-
-def graph_info_to_dict(info: GraphInfo) -> dict[str, Any]:
-    return {
-        "name": info.name,
-        "layers": [layer_info_to_dict(layer) for layer in info.layers],
-    }
-
-
 def graph_info_from_dict(data: dict[str, Any]) -> GraphInfo:
     return GraphInfo(
         name=str(data["name"]),
-        layers=[layer_info_from_dict(layer) for layer in data.get("layers", [])],
+        layers=[LayerInfo(**layer) for layer in data["layers"]],
     )
 
 
 def patch_to_dict(patch: FigureStylePatch) -> dict[str, Any]:
     return {
-        "target": {
-            "layer_scope": patch.target.layer_scope,
-            "layer_indices": list(patch.target.layer_indices),
-        },
+        "target": asdict(patch.target),
         "enabled_paths": sorted(patch.enabled_paths),
         "page": patch.page,
         "layer": patch.layer,
@@ -108,38 +84,24 @@ def patch_to_dict(patch: FigureStylePatch) -> dict[str, Any]:
 
 
 def patch_from_dict(data: dict[str, Any]) -> FigureStylePatch:
-    target = data.get("target", {})
+    target = data["target"]
+    scope = target["layer_scope"]
+    if scope not in {"all", "selected"}:
+        raise OriginAutomationError(f"未知目标图层范围：{scope}")
     return FigureStylePatch(
-        target=PatchTarget(
-            layer_scope=str(target.get("layer_scope", "all")),
-            layer_indices=[int(index) for index in target.get("layer_indices", [])],
-        ),
-        enabled_paths={str(path) for path in data.get("enabled_paths", [])},
-        page=dict(data.get("page", {})),
-        layer=dict(data.get("layer", {})),
-        text=dict(data.get("text", {})),
-        plot=dict(data.get("plot", {})),
-        axis=dict(data.get("axis", {})),
-        legend=dict(data.get("legend", {})),
+        target=PatchTarget(scope, target["layer_indices"]),
+        enabled_paths=set(data["enabled_paths"]),
+        page=data["page"],
+        layer=data["layer"],
+        text=data["text"],
+        plot=data["plot"],
+        axis=data["axis"],
+        legend=data["legend"],
     )
-
-
-def apply_result_to_dict(result: ApplyResult) -> dict[str, Any]:
-    return {
-        "target_name": result.target_name,
-        "layer_indices": list(result.layer_indices),
-        "applied": list(result.applied),
-        "failed": list(result.failed),
-    }
 
 
 def apply_result_from_dict(data: dict[str, Any]) -> ApplyResult:
-    return ApplyResult(
-        target_name=str(data["target_name"]),
-        layer_indices=[int(index) for index in data.get("layer_indices", [])],
-        applied=[str(path) for path in data.get("applied", [])],
-        failed=[str(path) for path in data.get("failed", [])],
-    )
+    return ApplyResult(**data)
 
 
 def snapshot_to_dict(snapshot: StyleSnapshot) -> dict[str, Any]:
@@ -154,9 +116,9 @@ def snapshot_to_dict(snapshot: StyleSnapshot) -> dict[str, Any]:
 def snapshot_from_dict(data: dict[str, Any]) -> StyleSnapshot:
     return StyleSnapshot(
         target_name=str(data["target_name"]),
-        layer_indices=[int(index) for index in data.get("layer_indices", [])],
-        enabled_paths={str(path) for path in data.get("enabled_paths", [])},
-        styles={int(index): dict(style) for index, style in dict(data.get("styles", {})).items()},
+        layer_indices=data["layer_indices"],
+        enabled_paths=set(data["enabled_paths"]),
+        styles={int(index): style for index, style in data["styles"].items()},
     )
 
 

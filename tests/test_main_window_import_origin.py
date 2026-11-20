@@ -132,28 +132,17 @@ class MainWindowImportOriginTests(unittest.TestCase):
     def test_merge_request_shows_detection_error_for_user_action(self) -> None:
         window = MainWindow()
         try:
-            window.merge_panel.x_column_box.addItem("1. x", 0)
+            window.merge_panel.set_columns("sample.csv", ["x"])
             error = UserVisibleError("自动检测读入设置失败：损坏的工作簿")
             with (
                 patch.object(window.read_options_panel, "current_options", side_effect=error),
                 patch.object(QMessageBox, "warning") as warning,
             ):
-                request = window.current_merge_request(show_errors=True)
+                request = window.current_merge_request()
 
             self.assertIsNone(request)
             warning.assert_called_once_with(window, "无法读取数据", str(error))
             self.assertEqual(window.statusBar().currentMessage(), str(error))
-        finally:
-            window.close()
-
-    def test_merge_request_propagates_detection_error_without_user_prompt(self) -> None:
-        window = MainWindow()
-        try:
-            window.merge_panel.x_column_box.addItem("1. x", 0)
-            error = UserVisibleError("自动检测失败")
-            with patch.object(window.read_options_panel, "current_options", side_effect=error):
-                with self.assertRaisesRegex(UserVisibleError, "自动检测失败"):
-                    window.current_merge_request(show_errors=False)
         finally:
             window.close()
 
@@ -267,7 +256,7 @@ class MainWindowImportOriginTests(unittest.TestCase):
             window.closeEvent(event)
 
             self.assertFalse(event.isAccepted())
-            self.assertTrue(origin_panel.has_active_origin_task())
+            self.assertTrue(window.origin_task_runner.has_active_task())
             self.assertFalse(window.merge_panel.origin_button.isEnabled())
             self.assertFalse(window.release_origin_button.isEnabled())
             self.assertFalse(origin_panel.isEnabled())
@@ -288,7 +277,7 @@ class MainWindowImportOriginTests(unittest.TestCase):
             self.assertTrue(origin_panel.isEnabled())
             self.assertIsNone(QApplication.overrideCursor())
         finally:
-            if origin_panel.has_active_origin_task():
+            if window.origin_task_runner.has_active_task():
                 self._drain_runner(window.origin_task_runner)
             window.close()
 

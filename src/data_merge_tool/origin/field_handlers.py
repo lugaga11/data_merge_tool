@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 import math
 import re
 from typing import Any
@@ -26,7 +27,7 @@ class OriginStyleFieldsMixin(ABC):
         if not layer_indices:
             raise OriginAutomationError("没有可读取的目标图层。")
         return StyleSnapshot(
-            target_name=getattr(graph, "name", "Active Graph"),
+            target_name=graph.name,
             layer_indices=layer_indices,
             enabled_paths=set(patch.enabled_paths),
             styles={index: self._read_graph_layer_style(op, graph, index) for index in layer_indices},
@@ -44,145 +45,58 @@ class OriginStyleFieldsMixin(ABC):
         applied: list[str] = []
         failed: list[str] = []
 
-        def run(base_path: str, path: str, callback: Any) -> None:
-            if base_path not in snapshot.enabled_paths:
+        def run(path: str, action: Callable[[], None], layer_index: int | None = None) -> None:
+            if path not in snapshot.enabled_paths:
                 return
+            label = path if layer_index is None else f"{path}[{layer_index}]"
             try:
-                callback()
-                applied.append(path)
+                action()
+                applied.append(label)
             except Exception as exc:
-                failed.append(f"{path}: {exc}")
+                failed.append(f"{label}: {exc}")
 
         first_style = next(iter(snapshot.styles.values()), None)
         if first_style is not None:
-            page = first_style.get("page", {})
-            if isinstance(page, dict):
-                run("page.size_in", "page.size_in", lambda: self._apply_page_size(graph, self._require_page_size(page)))
-                run("page.anti_alias", "page.anti_alias", lambda: self._apply_page_antialias(graph, page))
+            run("page.size_in", lambda: self._apply_page_size(graph, first_style["page"]))
+            run("page.anti_alias", lambda: self._apply_page_antialias(graph, first_style["page"]))
 
-        for layer_index in snapshot.layer_indices:
-            if layer_index < 1 or layer_index > len(graph):
+        def restore_layer(layer_index: int) -> None:
+            if not 1 <= layer_index <= len(graph):
                 failed.append(f"layer[{layer_index}]: current graph does not contain this layer")
-                continue
-            style = snapshot.styles.get(layer_index, {})
+                return
+            style = snapshot.styles[layer_index]
             layer = graph[layer_index - 1]
-            layer_values = style.get("layer", {})
-            plot_values = style.get("plot", {})
-            text_values = style.get("text", {})
-            axis_values = style.get("axis", {})
-            legend_values = style.get("legend", {})
-            if isinstance(layer_values, dict):
-                run(
-                    "layer.geometry_in",
-                    f"layer.geometry_in[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_geometry(layer, self._require_layer_geometry(values)),
-                )
-                run(
-                    "layer.frame",
-                    f"layer.frame[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_frame(layer, values),
-                )
-                run(
-                    "layer.line_width_pt",
-                    f"layer.line_width_pt[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_line_width(layer, self._require_layer_line_width(values)),
-                )
-                run(
-                    "layer.scale_elements",
-                    f"layer.scale_elements[{layer_index}]",
-                    lambda layer=layer, values=layer_values: self._apply_layer_scale_elements(layer, self._require_layer_scale(values)),
-                )
-            if isinstance(plot_values, dict):
-                run(
-                    "plot.line_width_pt",
-                    f"plot.line_width_pt[{layer_index}]",
-                    lambda layer=layer, values=plot_values: self._apply_plot_line_width(layer, self._require_plot_line_width(values)),
-                )
-                run(
-                    "plot.symbol_size_pt",
-                    f"plot.symbol_size_pt[{layer_index}]",
-                    lambda layer=layer, values=plot_values: self._apply_plot_symbol_size(layer, self._require_plot_symbol_size(values)),
-                )
-            if isinstance(text_values, dict):
-                restore_text = {
-                    "x_title": text_values.get("x_title_raw", text_values.get("x_title", "")),
-                    "y_title": text_values.get("y_title_raw", text_values.get("y_title", "")),
-                    "legend_text": text_values.get("legend_text_raw", text_values.get("legend_text", "")),
-                    "title_font_size_pt": text_values.get("title_font_size_pt"),
-                    "tick_font_size_pt": text_values.get("tick_font_size_pt"),
-                    "legend_font_size_pt": text_values.get("legend_font_size_pt"),
-                }
-                run(
-                    "text.x_title",
-                    f"text.x_title[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_title(layer, "x", values),
-                )
-                run(
-                    "text.y_title",
-                    f"text.y_title[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_title(layer, "y", values),
-                )
-                run(
-                    "text.legend_text",
-                    f"text.legend_text[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_legend_text(layer, values),
-                )
-                run(
-                    "text.title_size_pt",
-                    f"text.title_size_pt[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_title_size(layer, self._require_text_size(values, "title_font_size_pt")),
-                )
-                run(
-                    "text.tick_size_pt",
-                    f"text.tick_size_pt[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_axis_tick_size(layer, self._require_text_size(values, "tick_font_size_pt")),
-                )
-                run(
-                    "text.legend_size_pt",
-                    f"text.legend_size_pt[{layer_index}]",
-                    lambda layer=layer, values=restore_text: self._apply_legend_size(layer, self._require_text_size(values, "legend_font_size_pt")),
-                )
-            if isinstance(axis_values, dict):
-                run(
-                    "axis.x_scale",
-                    f"axis.x_scale[{layer_index}]",
-                    lambda layer=layer, values=axis_values: self._apply_axis_scale(layer, "x", self._require_axis_scale(values, "x")),
-                )
-                run(
-                    "axis.y_scale",
-                    f"axis.y_scale[{layer_index}]",
-                    lambda layer=layer, values=axis_values: self._apply_axis_scale(layer, "y", self._require_axis_scale(values, "y")),
-                )
-                run(
-                    "axis.grid",
-                    f"axis.grid[{layer_index}]",
-                    lambda layer=layer, values=axis_values: self._apply_axis_grid(layer, values),
-                )
-            if isinstance(legend_values, dict):
-                restore_legend = {
-                    "visibility": "show" if legend_values.get("visibility") else "hide",
-                    "frame": bool(legend_values.get("frame")),
-                    "x": legend_values.get("x"),
-                    "y": legend_values.get("y"),
-                }
-                run(
-                    "legend.visibility",
-                    f"legend.visibility[{layer_index}]",
-                    lambda layer=layer, values=restore_legend: self._apply_legend_visibility(layer, values),
-                )
-                run(
-                    "legend.frame",
-                    f"legend.frame[{layer_index}]",
-                    lambda layer=layer, values=restore_legend: self._apply_legend_frame(layer, values),
-                )
-                run(
-                    "legend.position",
-                    f"legend.position[{layer_index}]",
-                    lambda layer=layer, values=restore_legend: self._restore_legend_xy(layer, values),
-                )
+
+            def restore(path: str, action: Callable[[], None]) -> None:
+                run(path, action, layer_index)
+
+            restore("layer.geometry_in", lambda: self._apply_layer_geometry(layer, style["layer"]))
+            restore("layer.frame", lambda: self._apply_layer_frame(layer, style["layer"]))
+            restore("layer.line_width_pt", lambda: self._apply_layer_line_width(layer, style["layer"]))
+            restore("layer.scale_elements", lambda: self._apply_layer_scale_elements(layer, style["layer"]))
+            restore("plot.line_width_pt", lambda: self._apply_plot_line_width(layer, style["plot"]))
+            restore("plot.symbol_size_pt", lambda: self._apply_plot_symbol_size(layer, style["plot"]))
+            restore("text.x_title", lambda: self._apply_axis_title(layer, "x", style["text"]["x_title_raw"]))
+            restore("text.y_title", lambda: self._apply_axis_title(layer, "y", style["text"]["y_title_raw"]))
+            restore("text.legend_text", lambda: self._apply_legend_text(layer, style["text"]["legend_text_raw"]))
+            restore("text.title_size_pt", lambda: self._apply_axis_title_size(layer, style["text"]))
+            restore("text.tick_size_pt", lambda: self._apply_axis_tick_size(layer, style["text"]))
+            restore("text.legend_size_pt", lambda: self._apply_legend_size(layer, style["text"]))
+            restore("axis.x_scale", lambda: self._apply_axis_scale(layer, "x", style["axis"]))
+            restore("axis.y_scale", lambda: self._apply_axis_scale(layer, "y", style["axis"]))
+            restore("axis.grid", lambda: self._apply_axis_grid(layer, style["axis"]))
+            restore(
+                "legend.visibility",
+                lambda: self._apply_legend_visibility(layer, "show" if self._flag(style["legend"], "visibility") else "hide"),
+            )
+            restore("legend.frame", lambda: self._apply_legend_frame(layer, style["legend"]))
+            restore("legend.position", lambda: self._restore_legend_xy(layer, style["legend"]))
+
+        for index in snapshot.layer_indices:
+            restore_layer(index)
 
         return ApplyResult(
-            target_name=getattr(graph, "name", "Active Graph"),
+            target_name=graph.name,
             layer_indices=snapshot.layer_indices,
             applied=applied,
             failed=failed,
@@ -238,57 +152,17 @@ class OriginStyleFieldsMixin(ABC):
 
     @staticmethod
     def _require_number(values: dict[str, Any], key: str) -> float:
-        value = values.get(key)
+        value = values[key]
         if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-            raise OriginAutomationError(f"cannot restore unreadable value: {key}")
+            raise OriginAutomationError(f"无法读取格式值：{key}")
         return float(value)
 
-    def _require_page_size(self, page: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(page)
-        restored["width_in"] = self._require_number(page, "width_in")
-        restored["height_in"] = self._require_number(page, "height_in")
-        return restored
-
-    def _require_layer_geometry(self, layer_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(layer_values)
-        for key in ("left_in", "top_in", "width_in", "height_in"):
-            restored[key] = self._require_number(layer_values, key)
-        return restored
-
-    def _require_layer_line_width(self, layer_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(layer_values)
-        restored["line_width_pt"] = self._require_number(layer_values, "line_width_pt")
-        return restored
-
-    def _require_layer_scale(self, layer_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(layer_values)
-        if restored.get("scale_fixed", False):
-            restored["scale_factor"] = self._require_number(layer_values, "scale_factor")
-        else:
-            restored["scale_factor"] = 1.0
-        return restored
-
-    def _require_plot_line_width(self, plot_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(plot_values)
-        restored["line_width_pt"] = self._require_number(plot_values, "line_width_pt")
-        return restored
-
-    def _require_plot_symbol_size(self, plot_values: dict[str, Any]) -> dict[str, Any]:
-        restored = dict(plot_values)
-        restored["symbol_size_pt"] = self._require_number(plot_values, "symbol_size_pt")
-        return restored
-
-    def _require_text_size(self, text_values: dict[str, Any], key: str) -> dict[str, Any]:
-        restored = dict(text_values)
-        restored[key] = self._require_number(text_values, key)
-        return restored
-
-    def _require_axis_scale(self, axis_values: dict[str, Any], axis_name: str) -> dict[str, Any]:
-        key = f"{axis_name}_scale"
-        value = axis_values.get(key)
-        if value not in {"linear", "log10"}:
-            raise OriginAutomationError(f"cannot restore unreadable value: {key}")
-        return {key: value}
+    @staticmethod
+    def _flag(values: dict[str, Any], key: str) -> bool:
+        value = values[key]
+        if value is None:
+            raise OriginAutomationError(f"无法读取格式值：{key}")
+        return bool(value)
 
     def _restore_legend_xy(self, layer: Any, legend_values: dict[str, Any]) -> None:
         x = self._require_number(legend_values, "x")
@@ -306,7 +180,7 @@ class OriginStyleFieldsMixin(ABC):
                 "height_in": self._try_get_float(layer, "height"),
                 "line_width_pt": self._try_get_float(layer, "x.thickness"),
                 "frame": self._read_layer_frame(layer),
-                "scale_fixed": bool(self._try_get_int(layer, "fixed")),
+                "scale_fixed": self._try_get_int(layer, "fixed"),
                 "scale_factor": self._try_get_float(layer, "factor"),
             }
         finally:
@@ -316,18 +190,18 @@ class OriginStyleFieldsMixin(ABC):
                 except Exception:
                     pass
 
-    def _read_layer_frame(self, layer: Any) -> dict[str, bool]:
+    def _read_layer_frame(self, layer: Any) -> dict[str, bool | None]:
         x_axes = self._try_get_int(layer, "x.showAxes")
         y_axes = self._try_get_int(layer, "y.showAxes")
         return {
-            "bottom": True if x_axes is None else bool(x_axes & 1),
-            "top": True if x_axes is None else bool(x_axes & 2),
-            "left": True if y_axes is None else bool(y_axes & 1),
-            "right": True if y_axes is None else bool(y_axes & 2),
+            "bottom": None if x_axes is None else bool(x_axes & 1),
+            "top": None if x_axes is None else bool(x_axes & 2),
+            "left": None if y_axes is None else bool(y_axes & 1),
+            "right": None if y_axes is None else bool(y_axes & 2),
         }
 
     def _read_legend_raw_text(self, op: Any, legend: Any | None) -> str:
-        fallback = str(getattr(legend, "text", "") or "") if legend is not None else ""
+        fallback = str(legend.text or "") if legend is not None else ""
         for expression in ("legend.text$", "Legend.text$"):
             value = self._evaluate_origin_string_expression(op, expression)
             if "\\l(" in value or "\\L(" in value or "%(" in value:
@@ -477,15 +351,15 @@ class OriginStyleFieldsMixin(ABC):
             )
             run(
                 f"text.x_title[{layer_index}]",
-                lambda layer=layer: self._apply_axis_title(layer, "x", patch.text),
+                lambda layer=layer: self._apply_axis_title(layer, "x", patch.text["x_title"]),
             )
             run(
                 f"text.y_title[{layer_index}]",
-                lambda layer=layer: self._apply_axis_title(layer, "y", patch.text),
+                lambda layer=layer: self._apply_axis_title(layer, "y", patch.text["y_title"]),
             )
             run(
                 f"text.legend_text[{layer_index}]",
-                lambda layer=layer: self._apply_legend_text(layer, patch.text),
+                lambda layer=layer: self._apply_legend_text(layer, patch.text["legend_text"]),
             )
             run(
                 f"text.title_size_pt[{layer_index}]",
@@ -513,7 +387,7 @@ class OriginStyleFieldsMixin(ABC):
             )
             run(
                 f"legend.visibility[{layer_index}]",
-                lambda layer=layer: self._apply_legend_visibility(layer, patch.legend),
+                lambda layer=layer: self._apply_legend_visibility(layer, patch.legend["visibility"]),
             )
             run(
                 f"legend.frame[{layer_index}]",
@@ -525,7 +399,7 @@ class OriginStyleFieldsMixin(ABC):
             )
 
         return ApplyResult(
-            target_name=getattr(graph, "name", "Active Graph"),
+            target_name=graph.name,
             layer_indices=layer_indices,
             applied=applied,
             failed=failed,
@@ -539,8 +413,8 @@ class OriginStyleFieldsMixin(ABC):
         return sorted(set(indices))
 
     def _apply_page_size(self, graph: Any, page: dict[str, Any]) -> None:
-        width_in = float(page["width_in"])
-        height_in = float(page["height_in"])
+        width_in = self._require_number(page, "width_in")
+        height_in = self._require_number(page, "height_in")
         graph.lt_exec(
             "page.kar=0;"
             f"page.width=page.resx*{width_in:.8g};"
@@ -548,13 +422,13 @@ class OriginStyleFieldsMixin(ABC):
         )
 
     def _apply_page_antialias(self, graph: Any, page: dict[str, Any]) -> None:
-        graph.lt_exec(f"page.aa={1 if page.get('anti_alias', False) else 0};")
+        graph.lt_exec(f"page.aa={1 if self._flag(page, 'anti_alias') else 0};")
 
     def _apply_layer_geometry(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        left = float(layer_values["left_in"])
-        top = float(layer_values["top_in"])
-        width = float(layer_values["width_in"])
-        height = float(layer_values["height_in"])
+        left = self._require_number(layer_values, "left_in")
+        top = self._require_number(layer_values, "top_in")
+        width = self._require_number(layer_values, "width_in")
+        height = self._require_number(layer_values, "height_in")
         layer.lt_exec(
             "layer.unit=2;"
             f"layer.left={left:.8g};"
@@ -564,20 +438,20 @@ class OriginStyleFieldsMixin(ABC):
         )
 
     def _apply_layer_scale_elements(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        if layer_values.get("scale_fixed", False):
-            factor = float(layer_values.get("scale_factor", 1.0))
+        if self._flag(layer_values, "scale_fixed"):
+            factor = self._require_number(layer_values, "scale_factor")
             layer.lt_exec(f"layer.fixed=1;layer.factor={factor:.8g};")
         else:
             layer.lt_exec("layer.fixed=0;")
 
     def _apply_layer_frame(self, layer: Any, layer_values: dict[str, Any]) -> None:
         frame = layer_values["frame"]
-        x_axes = (1 if frame.get("bottom", True) else 0) + (2 if frame.get("top", True) else 0)
-        y_axes = (1 if frame.get("left", True) else 0) + (2 if frame.get("right", True) else 0)
+        x_axes = (1 if self._flag(frame, "bottom") else 0) + (2 if self._flag(frame, "top") else 0)
+        y_axes = (1 if self._flag(frame, "left") else 0) + (2 if self._flag(frame, "right") else 0)
         layer.lt_exec(f"layer.x.showAxes={x_axes};layer.y.showAxes={y_axes};")
 
     def _apply_layer_line_width(self, layer: Any, layer_values: dict[str, Any]) -> None:
-        width = float(layer_values["line_width_pt"])
+        width = self._require_number(layer_values, "line_width_pt")
         layer.lt_exec(
             f"layer.x.thickness={width:.8g};"
             f"layer.x2.thickness={width:.8g};"
@@ -590,33 +464,32 @@ class OriginStyleFieldsMixin(ABC):
         )
 
     def _apply_plot_line_width(self, layer: Any, plot_values: dict[str, Any]) -> None:
-        width = float(plot_values["line_width_pt"])
+        width = self._require_number(plot_values, "line_width_pt")
         for plot in layer.plot_list():
             plot.set_cmd(f"-wp {width:.8g}")
 
     def _apply_plot_symbol_size(self, layer: Any, plot_values: dict[str, Any]) -> None:
-        size = float(plot_values["symbol_size_pt"])
+        size = self._require_number(plot_values, "symbol_size_pt")
         for plot in layer.plot_list():
             plot.symbol_size = size
 
-    def _apply_axis_title(self, layer: Any, axis_name: str, text_values: dict[str, Any]) -> None:
-        title = text_values[f"{axis_name}_title"]
+    def _apply_axis_title(self, layer: Any, axis_name: str, title: str) -> None:
         layer.axis(axis_name).title = str(title)
 
-    def _apply_legend_text(self, layer: Any, text_values: dict[str, Any]) -> None:
+    def _apply_legend_text(self, layer: Any, legend_text: str) -> None:
         legend = layer.label("legend") or layer.label("Legend")
         if legend is None:
             layer.lt_exec("legend;")
             legend = layer.label("legend") or layer.label("Legend")
         if legend is None:
             raise OriginAutomationError("当前图层没有可编辑的 legend 文本对象。")
-        legend_text = str(text_values.get("legend_text", "")).strip()
+        legend_text = legend_text.strip()
         if not legend_text:
             return
         legend.text = legend_text
 
     def _apply_axis_title_size(self, layer: Any, text_values: dict[str, Any]) -> None:
-        size = float(text_values["title_font_size_pt"])
+        size = self._require_number(text_values, "title_font_size_pt")
         layer.lt_exec(
             f"xb.fsize={size:.8g};"
             f"xt.fsize={size:.8g};"
@@ -625,37 +498,38 @@ class OriginStyleFieldsMixin(ABC):
         )
 
     def _apply_axis_tick_size(self, layer: Any, text_values: dict[str, Any]) -> None:
-        size = float(text_values["tick_font_size_pt"])
+        size = self._require_number(text_values, "tick_font_size_pt")
         layer.lt_exec(
             f"layer.x.label.pt={size:.8g};"
             f"layer.y.label.pt={size:.8g};"
         )
 
     def _apply_axis_scale(self, layer: Any, axis_name: str, axis_values: dict[str, Any]) -> None:
-        scale = axis_values.get(f"{axis_name}_scale", "keep")
+        scale = axis_values[f"{axis_name}_scale"]
         if scale == "keep":
             return
-        layer.axis(axis_name).scale = "log10" if scale == "log10" else "linear"
+        if scale not in {"log10", "linear"}:
+            raise OriginAutomationError(f"无法读取格式值：{axis_name}_scale")
+        layer.axis(axis_name).scale = scale
 
     def _apply_axis_grid(self, layer: Any, axis_values: dict[str, Any]) -> None:
-        value = 1 if axis_values.get("show_grid", False) else 0
+        value = 1 if self._flag(axis_values, "show_grid") else 0
         layer.lt_exec(f"layer.x.showGrids={value};layer.y.showGrids={value};")
 
-    def _apply_legend_visibility(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        visibility = legend_values.get("visibility", "keep")
+    def _apply_legend_visibility(self, layer: Any, visibility: str) -> None:
         if visibility == "keep":
             return
         layer.lt_exec(f"legend.show={1 if visibility == 'show' else 0};")
 
     def _apply_legend_frame(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        layer.lt_exec(f"legend.background={1 if legend_values.get('frame', False) else 0};")
+        layer.lt_exec(f"legend.background={1 if self._flag(legend_values, 'frame') else 0};")
 
     def _apply_legend_size(self, layer: Any, text_values: dict[str, Any]) -> None:
-        size = float(text_values["legend_font_size_pt"])
+        size = self._require_number(text_values, "legend_font_size_pt")
         layer.lt_exec(f"legend.fsize={size:.8g};")
 
     def _apply_legend_position(self, layer: Any, legend_values: dict[str, Any]) -> None:
-        position = legend_values.get("position", "keep")
+        position = legend_values["position"]
         if position == "keep":
             return
         if position == "upper_left":

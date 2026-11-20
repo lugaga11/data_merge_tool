@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +131,16 @@ class OriginWorkerClientTests(unittest.TestCase):
         client.shutdown()
         self.assertIsNone(client._process)
 
+    def test_real_worker_communicates_when_parent_requests_utf16_stdio(self) -> None:
+        client = OriginWorkerClient()
+        self.client = client
+        with patch.dict(os.environ, {"PYTHONIOENCODING": "utf-16"}):
+            self.assertEqual(client.ping(), {"status": "ok"})
+            with self.assertRaisesRegex(OriginWorkerError, "未知 Origin worker 命令：绘图失败"):
+                client.request("绘图失败")
+            client.shutdown()
+        self.assertIsNone(client._process)
+
     def test_unicode_worker_error_is_preserved(self) -> None:
         client = self.make_client("unicode_error")
 
@@ -165,6 +176,14 @@ class OriginWorkerClientTests(unittest.TestCase):
         client.mode = "ok"
         self.assertEqual(client.ping(), {"status": "ok"})
 
+    def test_idle_release_and_shutdown_do_not_start_origin_worker(self) -> None:
+        client = OriginWorkerClient()
+        with patch("data_merge_tool.origin.client.subprocess.Popen") as start:
+            client.release_origin()
+            client.shutdown()
+            start.assert_not_called()
+        self.assertIsNone(client._process)
+
     def test_release_origin_keeps_worker_available(self) -> None:
         client = self.make_client("release_then_ping")
 
@@ -187,17 +206,17 @@ class OriginWorkerClientTests(unittest.TestCase):
     def test_release_origin_dispatch_detaches_without_shutdown(self) -> None:
         class FakeAdapter:
             def __init__(self) -> None:
-                self.force: bool | None = None
+                self.detached = False
 
-            def detach(self, force: bool = False) -> None:
-                self.force = force
+            def detach(self) -> None:
+                self.detached = True
 
         adapter = FakeAdapter()
 
         result = dispatch(adapter, "release_origin", {})  # type: ignore[arg-type]
 
         self.assertEqual(result, {"status": "released"})
-        self.assertTrue(adapter.force)
+        self.assertTrue(adapter.detached)
 
 
 if __name__ == "__main__":

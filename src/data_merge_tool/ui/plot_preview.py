@@ -13,19 +13,27 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-try:
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-    from matplotlib.figure import Figure
+# isort: split
+# Load PySide6 first so Matplotlib selects the application's Qt binding.
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+from matplotlib.backend_bases import MouseButton, MouseEvent
+from matplotlib.figure import Figure
 
-    MATPLOTLIB_AVAILABLE = True
-except Exception:
-    FigureCanvas = None
-    Figure = None
-    MATPLOTLIB_AVAILABLE = False
-
-from ..constants import ALIGN_CENTER
 from ..data_types import OriginImportData
 from .controls import make_button
+
+
+class _PreviewToolbar(NavigationToolbar2QT):
+    toolitems = (
+        ("还原视图", "恢复初始坐标范围", "home", "home"),
+        ("后退", "返回上一个视图", "back", "back"),
+        ("前进", "前往下一个视图", "forward", "forward"),
+        (None, None, None, None),
+        ("平移", "拖动平移，再次点击退出", "move", "pan"),
+        ("框选缩放", "拖出矩形放大，再次点击退出", "zoom_to_rect", "zoom"),
+        ("保存图片", "保存当前图像", "filesave", "save_figure"),
+    )
 
 
 class PlotPreviewPanel(QWidget):
@@ -50,6 +58,7 @@ class PlotPreviewPanel(QWidget):
         self.log_x_check = QCheckBox("Log X")
         self.log_y_check = QCheckBox("Log Y")
         self.legend_check = QCheckBox("显示图例")
+        self.legend_check.setToolTip("绘图后，单击图例的线段或名称可隐藏或显示对应曲线。请先退出平移或缩放模式。")
         self.legend_check.setChecked(True)
         controls.addWidget(self.log_x_check)
         controls.addWidget(self.log_y_check)
@@ -59,27 +68,32 @@ class PlotPreviewPanel(QWidget):
         controls.addWidget(self.plot_button)
         layout.addLayout(controls)
 
-        if MATPLOTLIB_AVAILABLE and Figure is not None and FigureCanvas is not None:
-            self.figure = Figure(figsize=(7, 5), tight_layout=True)
-            self.canvas = FigureCanvas(self.figure)
-            self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            layout.addWidget(self.canvas, 1)
-        else:
-            missing = QLabel("当前环境未安装 matplotlib，绘图预览不可用；数据合并、复制和导出仍可正常使用。")
-            missing.setObjectName("EmptyState")
-            missing.setAlignment(ALIGN_CENTER)
-            layout.addWidget(missing, 1)
-            self.figure = None
-            self.canvas = None
+        self.figure = Figure(figsize=(7, 5), tight_layout=True)
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.toolbar = _PreviewToolbar(self.canvas, self)
+        self.toolbar.setEnabled(False)
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas, 1)
+        self.canvas.mpl_connect("button_press_event", self._on_canvas_press)
 
-    def is_available(self) -> bool:
-        return MATPLOTLIB_AVAILABLE and self.figure is not None and self.canvas is not None
+    def _on_canvas_press(self, event: MouseEvent) -> None:
+        if event.button != MouseButton.LEFT or self.toolbar.mode or not self.figure.axes:
+            return
+        axis = self.figure.axes[0]
+        legend = axis.get_legend()
+        if legend is None or not legend.contains(event)[0]:
+            return
+        for line, sample, label in zip(axis.lines, legend.get_lines(), legend.get_texts(), strict=True):
+            if sample.contains(event)[0] or label.contains(event)[0]:
+                visible = not line.get_visible()
+                line.set_visible(visible)
+                sample.set_alpha(line.get_alpha() if visible else 0.3)
+                label.set_alpha(1.0 if visible else 0.4)
+                self.canvas.draw_idle()
+                return
 
     def render_origin_data(self, origin_data: OriginImportData) -> bool:
-        if not self.is_available():
-            self.information_requested.emit("绘图不可用", "当前环境未安装 matplotlib。")
-            return False
-
         dataframe = origin_data.dataframe
         if dataframe.empty:
             self.information_requested.emit("无数据", "当前合并结果为空，无法绘图。")
@@ -90,8 +104,15 @@ class PlotPreviewPanel(QWidget):
             self.information_requested.emit("无 X 数据", "当前导入数据中没有可用于绘图的 X 列。")
             return False
 
-        assert self.figure is not None
+        if "y" in axis_spec.partition("x")[0]:
+            self.information_requested.emit("无 X 数据", "当前导入数据的 Y 列前没有对应的 X 列。")
+            return False
+        if "y" not in axis_spec:
+            self.information_requested.emit("无 Y 数据", "没有可绘制的 Y 列。")
+            return False
+
         self.figure.clear()
+        self.toolbar.update()
         axis = self.figure.add_subplot(111)
         axis.set_facecolor("#fbfcfe")
         axis.grid(True, color="#e2e8f0", linewidth=0.8)
@@ -110,9 +131,7 @@ class PlotPreviewPanel(QWidget):
                 continue
             if axis_role != "y":
                 continue
-            if current_x is None:
-                self.information_requested.emit("无 X 数据", "当前导入数据的 Y 列前没有对应的 X 列。")
-                return False
+            assert current_x is not None
             axis.plot(
                 current_x,
                 numeric.iloc[:, column_index],
@@ -122,38 +141,32 @@ class PlotPreviewPanel(QWidget):
             )
             line_count += 1
 
-        if line_count == 0:
-            self.information_requested.emit("无 Y 数据", "没有可绘制的 Y 列。")
-            return False
-
         axis.set_xlabel(x_label)
         axis.set_ylabel("Y")
         axis.set_title("Merged Data Preview" if axis_spec.count("x") <= 1 else "Per-file X Data Preview")
         self._finish_plot(axis, line_count)
+        self.toolbar.setEnabled(True)
         return True
-
-    def clear(self) -> None:
-        if self.figure is None or self.canvas is None:
-            return
-        self.figure.clear()
-        self.canvas.draw_idle()
 
     def set_action_enabled(self, enabled: bool) -> None:
         self.plot_button.setEnabled(enabled)
 
     def _finish_plot(self, axis, line_count: int) -> None:
-        if self.canvas is None:
-            return
         if self.log_x_check.isChecked():
             axis.set_xscale("log")
         if self.log_y_check.isChecked():
             axis.set_yscale("log")
 
+        message = f"绘图已更新：{line_count} 条曲线。"
         if self.legend_check.isChecked():
             if line_count <= 30:
-                axis.legend(loc="best", fontsize=8)
+                # Older Matplotlib versions omit labels beginning with an underscore.
+                legend = axis.legend(axis.lines, [" "] * line_count, loc="best", fontsize=8)
+                for text, line in zip(legend.get_texts(), axis.lines, strict=True):
+                    text.set_text(line.get_label())
+                message += " 单击图例可切换曲线显隐。"
             else:
-                self.status_message.emit("曲线数量超过 30，已自动隐藏图例。", 5000)
+                message += " 曲线数量超过 30，已自动隐藏图例。"
 
         self.canvas.draw_idle()
-        self.status_message.emit(f"绘图已更新：{line_count} 条曲线。", 4000)
+        self.status_message.emit(message, 5000)

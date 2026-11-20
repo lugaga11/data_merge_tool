@@ -29,7 +29,6 @@ class ReadDetection:
 class MergeOptions:
     read: ReadOptions
     y_columns: List[int]
-    y_columns_auto: bool
     keep_single_x: bool
     x_column: int
     validate_x: bool

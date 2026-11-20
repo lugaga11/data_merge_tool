@@ -67,10 +67,15 @@ QComboBox::drop-down:hover {
 QComboBox::drop-down:pressed {
     background: #bfdbfe;
 }
-QComboBox::down-arrow {
-    image: none;
-    width: 0;
-    height: 0;
+QComboBox::down-arrow, QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: url("__RESOURCE_DIR__/arrow_down.svg");
+    width: 8px;
+    height: 5px;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: url("__RESOURCE_DIR__/arrow_up.svg");
+    width: 8px;
+    height: 5px;
 }
 QComboBox QAbstractItemView {
     border: 1px solid #cfd8e6;
@@ -173,7 +178,7 @@ QAbstractItemView::indicator:checked,
 QListWidget::indicator:checked {
     background: #2f80ed;
     border: 1px solid #1f6fd1;
-    image: url("__CHECKMARK_ICON__");
+    image: url("__RESOURCE_DIR__/ui_checkmark.svg");
 }
 QCheckBox::indicator:checked:hover,
 QAbstractItemView::indicator:checked:hover,
@@ -227,14 +232,6 @@ QPushButton:pressed {
     padding-top: 8px;
     padding-bottom: 6px;
 }
-QPushButton[role="primary"] {
-    color: #ffffff;
-    border-color: #1f6fd1;
-    background: #256fce;
-}
-QPushButton[role="primary"]:hover {
-    background: #1e5fb2;
-}
 QPushButton[role="primary"]:pressed {
     background: #1d4f95;
 }
@@ -251,6 +248,14 @@ QPushButton:disabled {
     color: #94a3b8;
     border-color: #d8e0ea;
     background: #f3f6fa;
+}
+QPushButton[role="primary"] {
+    color: #ffffff;
+    border-color: #1f6fd1;
+    background: #256fce;
+}
+QPushButton[role="primary"]:hover {
+    background: #1e5fb2;
 }
 QTabWidget::pane {
     border: 0;

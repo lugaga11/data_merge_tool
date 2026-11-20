@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-这是一个 Windows 桌面端实验数据合并工具，当前开发版本为 `v2.5.0`。应用基于 PySide6，主要面向本地数据文件读取、预览、列选择、合并、导出，以及与 Origin/OriginPro 的自动化联动。
+这是一个 Windows 桌面端实验数据合并工具，当前开发版本为 `v2.5.1`。应用基于 PySide6，主要面向本地数据文件读取、预览、列选择、合并、导出，以及与 Origin/OriginPro 的自动化联动。
 
 根目录的 `数据合并工具.py` 是当前版本的固定本地启动入口；实际业务代码在 `src/data_merge_tool/`。发布包通过 PyInstaller 生成，输出默认放在 `artifacts/`，该目录不纳入版本控制。
 
@@ -79,7 +79,7 @@ git status --short
 ```powershell
 & 'D:\Program Files\Anaconda3\envs\my_base\python.exe' -m PyInstaller --clean --noconfirm `
   --distpath .\artifacts\dist `
-  --workpath .\artifacts\build\v2.5.0 `
+  --workpath .\artifacts\build\v2.5.1 `
   .\packaging\build_windows.spec
 ```
 

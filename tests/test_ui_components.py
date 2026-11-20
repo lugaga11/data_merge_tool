@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
 
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
-
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from matplotlib import rc_context
+from matplotlib.backend_bases import MouseButton, MouseEvent
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -22,12 +23,15 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from data_merge_tool.data_types import OriginImportData, ReadDetection, ReadOptions
+from data_merge_tool.origin.client import OriginWorkerClient
 from data_merge_tool.origin.panel import OriginPanelWidget
 from data_merge_tool.ui.file_queue import FileQueuePanel
+from data_merge_tool.ui.main_window import MainWindow
 from data_merge_tool.ui.merge_panel import MergePanel
 from data_merge_tool.ui.plot_preview import PlotPreviewPanel
 from data_merge_tool.ui.preview_panel import PreviewPanel
 from data_merge_tool.ui.read_options_panel import ReadOptionsPanel
+from data_merge_tool.ui.task_runner import TaskRunner
 
 
 class UiComponentTests(unittest.TestCase):
@@ -71,8 +75,28 @@ class UiComponentTests(unittest.TestCase):
             finally:
                 panel.close()
 
+    def test_origin_layer_buttons_select_exactly_the_requested_patch_target(self) -> None:
+        panel = OriginPanelWidget(OriginWorkerClient(), TaskRunner(queue_when_busy=True))
+        radios = [panel.allLayersRadio, panel.singleLayerRadio, panel.customLayersRadio]
+        try:
+            panel.layerCombo.addItems(["Layer 1", "Layer 2", "Layer 3"])
+            panel.layerCombo.setCurrentIndex(1)
+            panel.customLayersEdit.setText("1,3")
+            self.assertEqual([button for button in radios if button.isChecked()], [panel.singleLayerRadio])
+            for button, scope, indices in (
+                (panel.customLayersRadio, "selected", [1, 3]),
+                (panel.allLayersRadio, "all", []),
+                (panel.singleLayerRadio, "selected", [2]),
+            ):
+                button.click()
+                self.assertEqual([radio for radio in radios if radio.isChecked()], [button])
+                target = panel.build_patch().target
+                self.assertEqual((target.layer_scope, target.layer_indices), (scope, indices))
+        finally:
+            panel.close()
+
     def test_origin_error_dialog_temporarily_uses_arrow_cursor(self) -> None:
-        panel = OriginPanelWidget()
+        panel = OriginPanelWidget(OriginWorkerClient(), TaskRunner(queue_when_busy=True))
         cursor_shapes: list[Qt.CursorShape] = []
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
@@ -128,11 +152,50 @@ class UiComponentTests(unittest.TestCase):
                 self.assertEqual(detector.call_count, 2)
 
             panel.skip_mode_box.setCurrentText("手动")
+            self.assertEqual(panel.skip_spin.value(), 0)
             panel.skip_spin.setValue(7)
             self.assertTrue(panel.skip_spin.isEnabled())
             self.assertGreaterEqual(len(changes), 1)
         finally:
             panel.close()
+
+    def test_unconfident_preview_uses_saved_manual_settings_and_shows_the_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "a.csv"
+            first.write_text("仪器设置\n" * 30 + "x,y\n0,10\n1,20\n2,30\n", encoding="utf-8")
+            second = Path(folder) / "b.txt"
+            second.write_text("单列测量\n" + "\n".join(map(str, range(50))), encoding="utf-8")
+
+            window = MainWindow()
+            panel = window.read_options_panel
+            try:
+                modes = (
+                    panel.skip_mode_box, panel.header_mode_box, panel.delimiter_mode_box, panel.encoding_mode_box
+                )
+                for mode in modes:
+                    mode.setCurrentText("手动")
+                panel.skip_spin.setValue(1)
+                panel.header_check.setChecked(False)
+                panel.delimiter_box.setCurrentText("Tab")
+                panel.encoding_box.setCurrentText("latin1")
+                for mode in modes:
+                    mode.setCurrentText("自动")
+
+                window.file_queue.add_paths([str(first), str(second)])
+                self.assertEqual(panel.current_options(), ReadOptions(30, "逗号 ,", "utf-8", True, True))
+                window.file_queue.file_list.setCurrentRow(1)
+                self.assertEqual(panel.current_options(), ReadOptions(1, "Tab", "自动", False, True))
+                model = window.preview_panel.input_model
+                self.assertEqual((model.rowCount(), model.columnCount()), (50, 1))
+                self.assertEqual(model._df.iloc[:, 0].tolist(), list(range(50)))
+                self.assertIn("b.txt：未能可靠识别", window.statusBar().currentMessage())
+
+                window.file_queue.file_list.setCurrentRow(0)
+                for mode in modes:
+                    mode.setCurrentText("手动")
+                self.assertEqual(panel.current_options(), ReadOptions(1, "Tab", "latin1", False, True))
+            finally:
+                window.close()
 
     def test_merge_panel_maps_state_without_reading_files(self) -> None:
         panel = MergePanel()
@@ -192,6 +255,67 @@ class UiComponentTests(unittest.TestCase):
         finally:
             panel.close()
 
+    def test_preview_legend_clicks_toggle_matching_line_after_redraw(self) -> None:
+        panel = PlotPreviewPanel()
+        self.addCleanup(panel.close)
+        frame = pd.DataFrame([[0, 2, 4], [1, 3, 5]], columns=["x", "_signal", "_signal"])
+        data = OriginImportData(frame, "xyy", [], [], "sample")
+
+        def click(artist) -> None:
+            box = artist.get_window_extent(panel.canvas.get_renderer())
+            event = MouseEvent("button_press_event", panel.canvas, *box.get_points().mean(axis=0), MouseButton.LEFT)
+            panel.canvas.callbacks.process(event.name, event)
+            up = MouseEvent("button_release_event", panel.canvas, event.x, event.y, MouseButton.LEFT)
+            panel.canvas.callbacks.process(up.name, up)
+
+        for _ in range(2):
+            self.assertTrue(panel.render_origin_data(data))
+            panel.canvas.draw()
+            axis = panel.figure.axes[0]
+            legend = axis.get_legend()
+            self.assertEqual([t.get_text() for t in legend.get_texts()], ["_signal", "_signal"])
+            click(legend.get_texts()[1])
+            self.assertTrue(axis.lines[0].get_visible())
+            self.assertFalse(axis.lines[1].get_visible())
+            self.assertLess(legend.get_texts()[1].get_alpha(), 1)
+            click(legend.get_lines()[1])
+            self.assertTrue(axis.lines[1].get_visible())
+
+    def test_preview_toolbar_zoom_pan_restore_and_save(self) -> None:
+        panel = PlotPreviewPanel()
+        self.addCleanup(panel.close)
+        data = OriginImportData(pd.DataFrame({"x": [0, 10], "y": [0, 10]}), "xy", [], [], "test")
+        self.assertTrue(panel.render_origin_data(data))
+        panel.canvas.draw()
+        actions = {action.text(): action for action in panel.toolbar.actions()}
+        axis = panel.figure.axes[0]
+        original = axis.get_xlim()
+
+        def drag(start, end) -> None:
+            for name, point in (("button_press_event", start), ("motion_notify_event", end), ("button_release_event", end)):
+                ev = MouseEvent(name, panel.canvas, *axis.transData.transform(point), button=MouseButton.LEFT)
+                panel.canvas.callbacks.process(name, ev)
+            panel.canvas.draw()
+
+        actions["框选缩放"].trigger()
+        drag((2, 2), (8, 8))
+        zoomed = axis.get_xlim()
+        self.assertGreater(zoomed[0], original[0])
+        self.assertLess(zoomed[1], original[1])
+        actions["平移"].trigger()
+        drag((4, 4), (5, 5))
+        self.assertNotEqual(axis.get_xlim(), zoomed)
+        actions["后退"].trigger()
+        self.assertEqual(axis.get_xlim(), zoomed)
+        actions["还原视图"].trigger()
+        self.assertEqual(axis.get_xlim(), original)
+
+        with tempfile.TemporaryDirectory() as folder, rc_context():
+            target = Path(folder) / "preview.png"
+            with patch.object(QFileDialog, "getSaveFileName", return_value=(str(target), "PNG")):
+                actions["保存图片"].trigger()
+            self.assertFalse(QImage(str(target)).isNull())
+
     def test_plot_preview_renders_only_prebuilt_origin_data(self) -> None:
         panel = PlotPreviewPanel()
         statuses: list[tuple[str, int]] = []
@@ -199,9 +323,6 @@ class UiComponentTests(unittest.TestCase):
         panel.status_message.connect(lambda text, timeout: statuses.append((text, timeout)))
         panel.information_requested.connect(lambda title, text: information.append((title, text)))
         try:
-            if not panel.is_available():
-                self.skipTest("matplotlib is not available")
-
             origin_data = OriginImportData(
                 dataframe=pd.DataFrame({"x": [1, 2], "y": [3, 4]}),
                 axis_spec="xy",
@@ -210,7 +331,6 @@ class UiComponentTests(unittest.TestCase):
                 workbook_label="sample",
             )
             self.assertTrue(panel.render_origin_data(origin_data))
-            assert panel.figure is not None
             axis = panel.figure.axes[0]
             self.assertEqual(axis.get_xlabel(), "x")
             self.assertEqual(len(axis.lines), 1)

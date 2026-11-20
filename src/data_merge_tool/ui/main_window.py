@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..constants import APP_TITLE, CHECKMARK_ICON, HORIZONTAL
+from ..constants import APP_TITLE, HORIZONTAL
 from ..data_reading.readers import read_table, scan_data_files
 from ..data_types import MergeOptions, OriginImportData
 from ..errors import UserVisibleError
@@ -36,7 +36,7 @@ from .merge_panel import MergePanel
 from .plot_preview import PlotPreviewPanel
 from .preview_panel import PreviewPanel
 from .read_options_panel import ReadOptionsPanel
-from .task_runner import TaskRunner, TaskSpec
+from .task_runner import TaskResult, TaskRunner, TaskSpec
 
 
 class MainWindow(QMainWindow):
@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+        if self.origin_panel.preset_load_warning:
+            self.statusBar().showMessage(self.origin_panel.preset_load_warning, 10000)
         self._apply_style()
         self.refresh_input_preview()
         self.mark_output_dirty()
@@ -148,6 +150,8 @@ class MainWindow(QMainWindow):
         self.file_queue.status_message.connect(self.statusBar().showMessage)
 
         self.read_options_panel.options_changed.connect(self._on_read_options_changed)
+        self.read_options_panel.status_message.connect(self.statusBar().showMessage)
+        self.origin_panel.status_message.connect(self.statusBar().showMessage)
 
         self.merge_panel.options_changed.connect(self.mark_output_dirty)
         self.merge_panel.preview_requested.connect(self.preview_merge)
@@ -163,7 +167,7 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         stylesheet = load_stylesheet("app.qss") + "\n" + load_stylesheet("origin_panel.qss")
-        self.setStyleSheet(stylesheet.replace("__CHECKMARK_ICON__", CHECKMARK_ICON))
+        self.setStyleSheet(stylesheet)
 
     def toggle_main_view(self) -> None:
         self.stack.setCurrentIndex(1 if self.stack.currentIndex() == 0 else 0)
@@ -205,16 +209,11 @@ class MainWindow(QMainWindow):
         self.last_origin_data = None
         self.preview_panel.reset_output()
 
-    def current_merge_request(
-        self,
-        show_errors: bool = False,
-    ) -> Optional[tuple[list[str], MergeOptions]]:
+    def current_merge_request(self) -> Optional[tuple[list[str], MergeOptions]]:
         try:
             read_options = self.read_options_panel.current_options()
-            options = self.merge_panel.current_options(read_options, show_errors=show_errors)
+            options = self.merge_panel.current_options(read_options)
         except UserVisibleError as exc:
-            if not show_errors:
-                raise
             message = str(exc)
             self.statusBar().showMessage(message, 8000)
             QMessageBox.warning(self, "无法读取数据", message)
@@ -223,7 +222,7 @@ class MainWindow(QMainWindow):
             return None
 
         paths = self.file_queue.checked_paths() if self.merge_panel.selected_only() else self.file_queue.all_paths()
-        if not paths and show_errors and self.merge_panel.selected_only():
+        if not paths and self.merge_panel.selected_only():
             QMessageBox.information(self, "提示", "当前合并范围是“仅选中文件”，请先勾选要合并的文件。")
         return (paths, options) if paths else None
 
@@ -250,11 +249,9 @@ class MainWindow(QMainWindow):
                 discovered.extend(scan_data_files(folder))
             return discovered
 
-        def finish_scan(result: object) -> None:
-            if not isinstance(result, list):
-                raise TypeError("文件夹扫描任务没有返回有效路径列表。")
+        def finish_scan(result: list[str]) -> None:
             if result:
-                self.file_queue.add_paths([str(path) for path in result])
+                self.file_queue.add_paths(result)
             else:
                 self.statusBar().showMessage("文件夹中没有找到支持的数据文件。", 5000)
 
@@ -297,19 +294,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(message, 8000)
             QMessageBox.information(self, "任务正在进行", message)
             return
-        self.origin_panel.detach()
         self.origin_worker.shutdown()
         super().closeEvent(event)
 
     def release_origin_control(self) -> None:
-        if self.task_runner.has_active_task():
-            self.statusBar().showMessage("当前任务还在处理，请稍后释放 Origin 控制。", 4000)
-            return
-        if self.origin_task_runner.has_active_task():
-            self.statusBar().showMessage("Origin 自动化任务仍在执行，请稍后释放控制。", 4000)
-            return
-
-        def finish_release(_result: object) -> None:
+        def finish_release(_result: None) -> None:
             self.origin_panel.clear_origin_connection_state()
             self.statusBar().showMessage(
                 "已释放 Origin 控制；现在可以关闭 Origin，下一次操作会自动重新连接。",
@@ -326,8 +315,8 @@ class MainWindow(QMainWindow):
     def start_data_task(
         self,
         message: str,
-        work: Callable[[], object],
-        on_success: Callable[[object], None],
+        work: Callable[[], TaskResult],
+        on_success: Callable[[TaskResult], None],
         error_title: str,
         reset_output_on_error: bool = False,
     ) -> bool:
@@ -344,8 +333,8 @@ class MainWindow(QMainWindow):
     def start_origin_task(
         self,
         message: str,
-        work: Callable[[], object],
-        on_success: Callable[[object], None],
+        work: Callable[[], TaskResult],
+        on_success: Callable[[TaskResult], None],
         error_title: str,
     ) -> bool:
         return self.origin_task_runner.run(
@@ -354,7 +343,7 @@ class MainWindow(QMainWindow):
             on_success,
         )
 
-    def _handle_data_task_error(self, spec: TaskSpec, error: object) -> None:
+    def _handle_data_task_error(self, spec: TaskSpec, error: Exception) -> None:
         if spec.reset_output_on_error:
             self.output_dirty = True
             self.last_origin_data = None
@@ -365,9 +354,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, spec.error_title, str(error))
         self.statusBar().showMessage(f"{spec.error_title}。", 5000)
 
-    def _handle_origin_task_error(self, spec: TaskSpec, error: object) -> None:
-        exc = error if isinstance(error, Exception) else RuntimeError(str(error))
-        self.origin_panel.show_error(spec.error_title, exc)
+    def _handle_origin_task_error(self, spec: TaskSpec, error: Exception) -> None:
+        self.origin_panel.show_error(spec.error_title, error)
 
     def set_merged_result(self, origin_data: OriginImportData) -> None:
         dataframe = origin_data.dataframe
@@ -387,62 +375,44 @@ class MainWindow(QMainWindow):
             on_ready(self.last_origin_data)
             return
 
-        request = self.current_merge_request(show_errors=True)
-        if request is None:
-            return
-        paths, options = request
-        generation = self._data_generation
-
-        def finish_merge_then_continue(result: object) -> None:
-            if generation != self._data_generation:
-                QMessageBox.information(
-                    self,
-                    "结果已过期",
-                    f"合并期间参数或文件选择发生了变化，本次结果已丢弃。请再次点击“{action_name}”。",
-                )
-                self.statusBar().showMessage("参数已变化，未继续使用过期合并结果。", 5000)
-                return
-            if not isinstance(result, OriginImportData):
-                QMessageBox.critical(self, "合并失败", "后台合并没有返回有效结果。")
-                return
-            self.set_merged_result(result)
-            self.statusBar().showMessage(f"合并完成，正在继续{action_name}...", 3000)
-            on_ready(result)
-
-        started = self.start_data_task(
-            f"正在后台合并数据，完成后继续{action_name}...",
-            lambda: build_origin_import_table(paths, options),
-            finish_merge_then_continue,
-            "无法合并",
-            reset_output_on_error=True,
-        )
-        if started:
-            self.preview_panel.reset_output(f"正在后台合并，完成后继续{action_name}...")
+        self._start_merge(action_name, on_ready)
 
     def preview_merge(self) -> None:
-        request = self.current_merge_request(show_errors=True)
+        self._start_merge()
+
+    def _start_merge(
+        self,
+        action_name: str = "",
+        on_ready: Callable[[OriginImportData], object] | None = None,
+    ) -> None:
+        request = self.current_merge_request()
         if request is None:
             return
         paths, options = request
         generation = self._data_generation
 
-        def finish_preview(result: object) -> None:
+        def finish(result: OriginImportData) -> None:
             if generation != self._data_generation:
+                if on_ready is not None:
+                    QMessageBox.information(
+                        self,
+                        "结果已过期",
+                        f"合并期间参数或文件选择发生了变化，本次结果已丢弃。请再次点击“{action_name}”。",
+                    )
                 self.statusBar().showMessage("设置已变化，本次合并结果已忽略。", 5000)
                 return
-            if isinstance(result, OriginImportData):
-                self.set_merged_result(result)
+            self.set_merged_result(result)
+            if on_ready is None:
                 self.statusBar().showMessage("合并预览已更新。", 4000)
+            else:
+                self.statusBar().showMessage(f"合并完成，正在继续{action_name}...", 3000)
+                on_ready(result)
 
-        started = self.start_data_task(
-            "正在后台合并数据...",
-            lambda: build_origin_import_table(paths, options),
-            finish_preview,
-            "无法合并",
-            reset_output_on_error=True,
-        )
-        if started:
-            self.preview_panel.reset_output("正在后台合并，请稍候...")
+        message = f"正在后台合并数据，完成后继续{action_name}..." if on_ready is not None else "正在后台合并数据..."
+        if self.start_data_task(
+            message, lambda: build_origin_import_table(paths, options), finish, "无法合并", reset_output_on_error=True,
+        ):
+            self.preview_panel.reset_output(message)
 
     def copy_to_clipboard(self) -> None:
         self.ensure_import_data("复制", self.copy_ready_dataframe_to_clipboard)
@@ -470,7 +440,7 @@ class MainWindow(QMainWindow):
         path = Path(filename)
         if path.suffix == "":
             path = path.with_suffix(".csv" if "CSV" in selected_filter else ".xlsx")
-        dataframe = origin_data.dataframe.copy()
+        dataframe = origin_data.dataframe
 
         def do_export() -> Path:
             if path.suffix.lower() == ".xlsx":
@@ -479,9 +449,7 @@ class MainWindow(QMainWindow):
                 dataframe.to_csv(path, index=False, encoding="utf-8-sig")
             return path
 
-        def finish_export(result: object) -> None:
-            if not isinstance(result, Path):
-                raise TypeError("导出任务没有返回有效路径。")
+        def finish_export(result: Path) -> None:
             self.statusBar().showMessage(f"已导出：{result}", 6000)
             QMessageBox.information(self, "导出完成", f"文件已保存到：\n{result}")
 
@@ -491,23 +459,13 @@ class MainWindow(QMainWindow):
         self.ensure_import_data("导入 Origin", self.import_ready_dataframe_to_origin)
 
     def import_ready_dataframe_to_origin(self, origin_data: OriginImportData) -> None:
-        dataframe = origin_data.dataframe.copy()
-        axis_spec = origin_data.axis_spec
-        long_names = list(origin_data.long_names)
-        comments = list(origin_data.comments)
-        workbook_label = origin_data.workbook_label
-
         def do_import() -> str:
             return self.origin_worker.import_dataframe(
-                dataframe,
-                axis_spec,
-                long_names,
-                comments,
-                workbook_label,
+                origin_data.dataframe, origin_data.axis_spec, origin_data.long_names,
+                origin_data.comments, origin_data.workbook_label,
             )
 
-        def finish_import(result: object) -> None:
-            page_name = str(result)
+        def finish_import(page_name: str) -> None:
             self.statusBar().showMessage(f"已导入 Origin：{page_name}", 6000)
             activate_visible_origin_window()
 
@@ -520,15 +478,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def can_plot_from_import_data(options: MergeOptions) -> bool:
-        if options.keep_single_x:
-            return True
-        return options.y_columns_auto or options.x_column - 1 in options.y_columns
+        return options.keep_single_x or options.x_column - 1 in options.y_columns
 
     def plot_data(self) -> None:
-        if not self.plot_preview.is_available():
-            QMessageBox.information(self, "绘图不可用", "当前环境未安装 matplotlib。")
-            return
-        request = self.current_merge_request(show_errors=True)
+        request = self.current_merge_request()
         if request is None:
             return
         _paths, options = request

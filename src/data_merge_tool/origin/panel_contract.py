@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..ui.task_runner import TaskResult
 from .client import OriginWorkerClient
 from .presets import PresetStore
 from .protocol import StyleSnapshot
@@ -87,8 +88,8 @@ class OriginPanelContract(QWidget):
         def start_origin_task(
             self,
             message: str,
-            work: Callable[[], object],
-            on_success: Callable[[object], None],
+            work: Callable[[], TaskResult],
+            on_success: Callable[[TaskResult], None],
             error_title: str,
         ) -> bool: ...
 

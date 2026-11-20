@@ -4,8 +4,10 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from .style_registry import filter_known_style_paths
@@ -15,7 +17,7 @@ SCHEMA_VERSION = 1
 
 
 def _app_data_dir() -> Path:
-    base = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA")
+    base = os.environ.get("APPDATA")
     if base:
         return Path(base) / "DataMergeTool"
     return Path.home() / ".data_merge_tool"
@@ -87,26 +89,32 @@ class PresetImportResult:
     errors: dict[str, str]
 
 
+class _UnsupportedPresetVersion(ValueError):
+    pass
+
+
 class PresetStore:
     def __init__(self, path: Path = USER_PRESETS_PATH) -> None:
         self.path = path
 
     def load(self) -> PresetLoadResult:
-        if not self.path.exists():
-            return PresetLoadResult({})
-
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-            raw_presets = self._extract_presets(data)
-        except Exception as exc:
-            quarantined = self._quarantine_bad_file()
+            result = self.load_import_file(self.path)
+        except FileNotFoundError:
+            return PresetLoadResult({})
+        except (_UnsupportedPresetVersion, OSError) as exc:
+            return PresetLoadResult({}, f"无法载入用户 preset，已保留原文件。原因：{exc}")
+        except ValueError as exc:
+            try:
+                quarantined = self._quarantine_bad_file()
+            except OSError as rename_error:
+                return PresetLoadResult({}, f"用户 preset 文件已损坏，重命名失败：{rename_error}")
             return PresetLoadResult(
                 {},
                 f"用户 preset 文件已损坏，已重命名为 {quarantined.name}，本次启动使用空 preset。原因：{exc}",
                 quarantined,
             )
 
-        result = self.validate_many(raw_presets)
         warning = None
         if result.errors:
             names = "、".join(result.errors)
@@ -119,16 +127,20 @@ class PresetStore:
             detail = "；".join(f"{name}: {reason}" for name, reason in validated.errors.items())
             raise ValueError(f"存在无效 preset，未保存：{detail}")
 
+        # The file may have been replaced by a newer application since startup.
+        try:
+            self._read_presets(self.path)
+        except FileNotFoundError:
+            pass
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"schema_version": SCHEMA_VERSION, "presets": validated.presets}
-        tmp = self.path.with_name(f"{self.path.name}.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        with TemporaryDirectory(dir=self.path.parent) as temp_dir:
+            tmp = Path(temp_dir) / self.path.name
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
 
     def load_import_file(self, path: Path) -> PresetImportResult:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        raw_presets = self._extract_presets(data)
-        return self.validate_many(raw_presets)
+        return self.validate_many(self._read_presets(path))
 
     def validate_many(self, presets: dict[str, Any]) -> PresetImportResult:
         valid: dict[str, dict[str, Any]] = {}
@@ -152,32 +164,32 @@ class PresetStore:
         result["enabled_paths"] = filter_known_style_paths(preset.get("enabled_paths", []))
 
         page = self._section(preset, "page")
-        result["page"]["width_in"] = self._positive_float(page, "width_in", result["page"]["width_in"])
-        result["page"]["height_in"] = self._positive_float(page, "height_in", result["page"]["height_in"])
+        result["page"]["width_in"] = self._float(page, "width_in", result["page"]["width_in"])
+        result["page"]["height_in"] = self._float(page, "height_in", result["page"]["height_in"])
         result["page"]["anti_alias"] = self._bool(page, "anti_alias", result["page"]["anti_alias"])
 
         layer = self._section(preset, "layer")
         for key in ("left_in", "top_in"):
-            result["layer"][key] = self._nonnegative_float(layer, key, result["layer"][key])
+            result["layer"][key] = self._float(layer, key, result["layer"][key], allow_zero=True)
         for key in ("width_in", "height_in", "line_width_pt", "scale_factor"):
-            result["layer"][key] = self._positive_float(layer, key, result["layer"][key])
+            result["layer"][key] = self._float(layer, key, result["layer"][key])
         result["layer"]["scale_fixed"] = self._bool(layer, "scale_fixed", result["layer"]["scale_fixed"])
         frame = self._section(layer, "frame")
         for key in ("left", "bottom", "top", "right"):
             result["layer"]["frame"][key] = self._bool(frame, key, result["layer"]["frame"][key])
 
         plot = self._section(preset, "plot")
-        result["plot"]["line_width_pt"] = self._positive_float(plot, "line_width_pt", result["plot"]["line_width_pt"])
-        result["plot"]["symbol_size_pt"] = self._positive_float(plot, "symbol_size_pt", result["plot"]["symbol_size_pt"])
+        result["plot"]["line_width_pt"] = self._float(plot, "line_width_pt", result["plot"]["line_width_pt"])
+        result["plot"]["symbol_size_pt"] = self._float(plot, "symbol_size_pt", result["plot"]["symbol_size_pt"])
 
         text = self._section(preset, "text")
-        result["text"]["title_font_size_pt"] = self._positive_float(
+        result["text"]["title_font_size_pt"] = self._float(
             text, "title_font_size_pt", result["text"]["title_font_size_pt"]
         )
-        result["text"]["tick_font_size_pt"] = self._positive_float(
+        result["text"]["tick_font_size_pt"] = self._float(
             text, "tick_font_size_pt", result["text"]["tick_font_size_pt"]
         )
-        result["text"]["legend_font_size_pt"] = self._positive_float(
+        result["text"]["legend_font_size_pt"] = self._float(
             text, "legend_font_size_pt", result["text"]["legend_font_size_pt"]
         )
 
@@ -214,10 +226,18 @@ class PresetStore:
         return target
 
     @staticmethod
-    def _extract_presets(data: object) -> dict[str, Any]:
+    def _read_presets(path: Path) -> dict[str, Any]:
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("JSON 顶层应为对象")
-        presets = data.get("presets", data)
+        if "presets" not in data and ("schema_version" not in data or isinstance(data["schema_version"], dict)):
+            return data  # Legacy files map preset names directly to values.
+        version = data.get("schema_version", SCHEMA_VERSION)
+        if type(version) is not int or version < 1:
+            raise ValueError("preset 格式版本应为正整数")
+        if version != SCHEMA_VERSION:
+            raise _UnsupportedPresetVersion(f"不支持 preset 格式版本 {version}（当前支持 {SCHEMA_VERSION}）。")
+        presets = data.get("presets")
         if not isinstance(presets, dict):
             raise ValueError("presets 应为对象")
         return presets
@@ -237,24 +257,13 @@ class PresetStore:
         raise ValueError(f"{key} 应为布尔值")
 
     @staticmethod
-    def _positive_float(data: dict[str, Any], key: str, default: float) -> float:
+    def _float(data: dict[str, Any], key: str, default: float, *, allow_zero: bool = False) -> float:
         value = data.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{key} 应为数字")
-        value = float(value)
-        if value <= 0:
-            raise ValueError(f"{key} 应大于 0")
-        return value
-
-    @staticmethod
-    def _nonnegative_float(data: dict[str, Any], key: str, default: float) -> float:
-        value = data.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{key} 应为数字")
-        value = float(value)
-        if value < 0:
-            raise ValueError(f"{key} 应大于等于 0")
-        return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{key} 应为有限数字")
+        if value < 0 or (value == 0 and not allow_zero):
+            raise ValueError(f"{key} 应大于{'等于' if allow_zero else ''} 0")
+        return float(value)
 
     @staticmethod
     def _positive_int(data: dict[str, Any], key: str, default: int) -> int:

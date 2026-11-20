@@ -1,27 +1,28 @@
 from __future__ import annotations
+import codecs
 import csv
 import re
 from dataclasses import dataclass
-from importlib import metadata, util
+from itertools import islice
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, cast
 
 import pandas as pd
 
-from ..constants import EXCEL_READER_DEPENDENCIES
 from ..data_types import ReadDetection
 from ..errors import UserVisibleError
 
 
 _NUMERIC_TOKEN = re.compile(r"^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$")
-_AUTO_DELIMITER_CANDIDATES = [",", "\t", ";", "whitespace"]
+_DETECTION_ROWS = 500
+_MIN_DATA_STREAK = 3
 _ENCODING_SAMPLE_BYTES = 32 * 1024
 _EXCEL_ENCODING_LABEL = "Excel 内置"
-_DELIMITER_LABELS = {
-    ",": "逗号 ,",
-    "\t": "Tab",
-    ";": "分号 ;",
-    "whitespace": "空格/连续空白",
+_DELIMITERS = {
+    "逗号 ,": ",",
+    "Tab": "\t",
+    "分号 ;": ";",
+    "空格/连续空白": r"\s+",
 }
 
 @dataclass(frozen=True)
@@ -38,37 +39,7 @@ class _DetectionCandidate:
     score: tuple[int, int, int, int]
 
 def delimiter_value(label: str) -> Optional[str]:
-    mapping = {
-        "自动": None,
-        "逗号 ,": ",",
-        "Tab": "\t",
-        "空格/连续空白": r"\s+",
-        "分号 ;": ";",
-    }
-    return mapping[label]
-
-def _delimiter_candidates(label: str) -> List[str]:
-    mapping = {
-        "逗号 ,": [","],
-        "Tab": ["\t"],
-        "空格/连续空白": ["whitespace"],
-        "分号 ;": [";"],
-    }
-    return mapping.get(label, _AUTO_DELIMITER_CANDIDATES)
-
-def _active_delimiter_candidates(label: str, lines: Sequence[str]) -> List[str]:
-    candidates = _delimiter_candidates(label)
-    if label != "自动":
-        return candidates
-
-    active: List[str] = []
-    for delimiter in candidates:
-        if delimiter == "whitespace" or any(delimiter in line for line in lines):
-            active.append(delimiter)
-    return active
-
-def _delimiter_label(delimiter: str) -> str:
-    return _DELIMITER_LABELS.get(delimiter, "自动")
+    return None if label == "自动" else _DELIMITERS[label]
 
 def _clean_text_field(value: str) -> str:
     return value.strip().lstrip("\ufeff")
@@ -76,7 +47,7 @@ def _clean_text_field(value: str) -> str:
 def _split_fields(text: str, delimiter: str) -> List[str]:
     if not text.strip():
         return []
-    if delimiter == "whitespace":
+    if delimiter == r"\s+":
         return [_clean_text_field(field) for field in re.split(r"\s+", text.strip()) if field.strip()]
 
     line = text.lstrip("\ufeff")
@@ -147,19 +118,13 @@ def _is_header_profile(
 
 def _detect_from_profiles(
     profiles: Sequence[_RowProfile],
-    fallback_skip_rows: int,
-    fallback_delimiter_label: str,
-    fallback_encoding_label: str,
-    fallback_has_header: bool,
     *,
     delimiter_label: str,
     encoding_label: str,
-    min_streak: int = 3,
     allow_wide_header: bool = False,
     allow_partial_header: bool = False,
-) -> _DetectionCandidate:
+) -> _DetectionCandidate | None:
     best: Optional[_DetectionCandidate] = None
-    best_score: tuple[int, int, int, int] = (-1, -1, -1, -10_000)
 
     start = 0
     while start < len(profiles):
@@ -178,7 +143,7 @@ def _detect_from_profiles(
             end += 1
 
         run_length = end - start
-        if run_length < min_streak:
+        if run_length < _MIN_DATA_STREAK:
             start = end
             continue
 
@@ -204,26 +169,12 @@ def _detect_from_profiles(
             message=message,
         )
         score = (1 if has_header else 0, data_width, run_length, -skip_rows)
-        if score > best_score:
+        if best is None or score > best.score:
             best = _DetectionCandidate(detection=detection, score=score)
-            best_score = score
 
         start = end
 
-    if best is not None:
-        return best
-
-    return _DetectionCandidate(
-        detection=ReadDetection(
-            skip_rows=fallback_skip_rows,
-            delimiter_label=fallback_delimiter_label,
-            encoding_label=fallback_encoding_label,
-            has_header=fallback_has_header,
-            confident=False,
-            message="未能可靠识别数据起点，继续使用手动读入设置。",
-        ),
-        score=(-1, -1, -1, -10_000),
-    )
+    return best
 
 def detect_read_options(
     path: Path,
@@ -231,51 +182,38 @@ def detect_read_options(
     encoding_label: str,
     fallback_skip_rows: int,
     fallback_has_header: bool,
-    *,
-    max_rows: int = 500,
 ) -> ReadDetection:
     suffix = path.suffix.lower()
     try:
         if suffix in {".xlsx", ".xls"}:
-            require_excel_reader(suffix)
             engine = "openpyxl" if suffix == ".xlsx" else "xlrd"
-            preview = pd.read_excel(path, header=None, nrows=max_rows, engine=engine)
+            preview = pd.read_excel(path, header=None, nrows=_DETECTION_ROWS, engine=engine)
             profiles = [_excel_row_profile(index, row) for index, (_, row) in enumerate(preview.iterrows())]
-            return _detect_from_profiles(
-                profiles,
-                fallback_skip_rows,
-                fallback_delimiter_label=delimiter_label,
-                fallback_encoding_label=_EXCEL_ENCODING_LABEL,
-                fallback_has_header=fallback_has_header,
-                delimiter_label=delimiter_label,
-                encoding_label=_EXCEL_ENCODING_LABEL,
-                allow_partial_header=True,
-            ).detection
-
-        encoding = detect_encoding(path, encoding_label)
-        with path.open("r", encoding=encoding, errors="replace") as handle:
-            lines = [line.rstrip("\r\n") for _, line in zip(range(max_rows), handle)]
-
-        candidates: List[_DetectionCandidate] = []
-        for delimiter in _active_delimiter_candidates(delimiter_label, lines):
-            profiles = [_text_row_profile(index, line, delimiter) for index, line in enumerate(lines)]
+            encoding_label = _EXCEL_ENCODING_LABEL
             candidate = _detect_from_profiles(
-                profiles,
-                fallback_skip_rows,
-                fallback_delimiter_label=delimiter_label,
-                fallback_encoding_label=encoding_label,
-                fallback_has_header=fallback_has_header,
-                delimiter_label=_delimiter_label(delimiter),
-                encoding_label=encoding,
-                allow_wide_header=delimiter == "whitespace",
+                profiles, delimiter_label=delimiter_label, encoding_label=encoding_label, allow_partial_header=True,
             )
-            if candidate.detection.confident:
-                candidates.append(candidate)
+            if candidate is not None:
+                return candidate.detection
+        else:
+            encoding = detect_encoding(path, encoding_label)
+            with path.open("r", encoding=encoding, errors="replace") as handle:
+                lines = [line.rstrip("\r\n") for line in islice(handle, _DETECTION_ROWS)]
 
-        if candidates:
-            return max(candidates, key=lambda candidate: candidate.score).detection
-    except UserVisibleError:
-        raise
+            candidates: list[_DetectionCandidate] = []
+            for label, delimiter in _DELIMITERS.items():
+                if delimiter_label != "自动" and label != delimiter_label:
+                    continue
+                if delimiter_label == "自动" and delimiter != r"\s+" and not any(delimiter in line for line in lines):
+                    continue
+                profiles = [_text_row_profile(index, line, delimiter) for index, line in enumerate(lines)]
+                candidate = _detect_from_profiles(
+                    profiles, delimiter_label=label, encoding_label=encoding, allow_wide_header=delimiter == r"\s+",
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+            if candidates:
+                return max(candidates, key=lambda item: item.score).detection
     except Exception as exc:
         raise UserVisibleError(f"{path.name} 自动检测读入设置失败：\n{exc}") from exc
 
@@ -297,13 +235,18 @@ def detect_encoding(path: Path, label: str) -> str:
             return _EXCEL_ENCODING_LABEL
         with path.open("rb") as handle:
             raw = handle.read(_ENCODING_SAMPLE_BYTES)
+            # A UTF-8 character split at the sample boundary can need up to three more bytes.
+            lookahead = handle.read(3)
         if raw.startswith(b"\xef\xbb\xbf"):
             return "utf-8-sig"
         if not raw or raw.isascii():
             return "utf-8"
         for encoding in ("utf-8", "gbk"):
             try:
-                text = raw.decode(encoding)
+                decoder = codecs.getincrementaldecoder(encoding)()
+                text = decoder.decode(raw, final=not lookahead)
+                if decoder.getstate()[0]:
+                    text += decoder.decode(lookahead, final=len(lookahead) < 3)
             except UnicodeDecodeError:
                 continue
             if encoding == "gbk" and _count_cjk(text) < 2:
@@ -315,36 +258,3 @@ def detect_encoding(path: Path, label: str) -> str:
     if label == _EXCEL_ENCODING_LABEL:
         return "utf-8"
     return label
-
-def _version_tuple(version: str) -> tuple[int, ...]:
-    parts = re.findall(r"\d+", version)
-    return tuple(int(part) for part in parts[:3])
-
-def _is_version_at_least(installed: str, minimum: str) -> bool:
-    installed_parts = _version_tuple(installed)
-    minimum_parts = _version_tuple(minimum)
-    width = max(len(installed_parts), len(minimum_parts))
-    installed_parts += (0,) * (width - len(installed_parts))
-    minimum_parts += (0,) * (width - len(minimum_parts))
-    return installed_parts >= minimum_parts
-
-def require_excel_reader(suffix: str) -> None:
-    package, minimum, requirement, label = EXCEL_READER_DEPENDENCIES[suffix]
-    if util.find_spec(package) is None:
-        raise UserVisibleError(
-            f"缺少读取 {label} 文件所需依赖：{requirement}。\n"
-            "请运行：pip install -r requirements_desktop.txt\n"
-            f"或单独运行：pip install \"{requirement}\""
-        )
-
-    try:
-        installed = metadata.version(package)
-    except metadata.PackageNotFoundError:
-        return
-
-    if not _is_version_at_least(installed, minimum):
-        raise UserVisibleError(
-            f"读取 {label} 文件需要 {requirement}，当前安装的是 {package}=={installed}。\n"
-            "请运行：pip install -U -r requirements_desktop.txt\n"
-            f"或单独运行：pip install -U \"{requirement}\""
-        )

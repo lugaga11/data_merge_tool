@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -23,7 +23,6 @@ from data_merge_tool.origin.protocol import (
     PatchTarget,
     StyleSnapshot,
     graph_info_from_dict,
-    graph_info_to_dict,
     patch_to_dict,
     snapshot_from_dict,
     snapshot_to_dict,
@@ -152,7 +151,7 @@ class OriginAdapterConnectionTests(unittest.TestCase):
 
 class OriginAdapterSnapshotTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.patch = FigureStylePatch(target=PatchTarget(), enabled_paths=set())
+        self.patch = FigureStylePatch(target=PatchTarget("all", []), enabled_paths=set())
 
     def test_snapshot_records_graph_name_without_project_lookup(self) -> None:
         adapter = OriginAdapter()
@@ -178,7 +177,9 @@ class OriginAdapterSnapshotTests(unittest.TestCase):
     def test_graph_info_protocol_contains_only_consumed_fields(self) -> None:
         info = GraphInfo("Graph1", [LayerInfo(1, 2)])
 
-        payload = graph_info_to_dict(info)
+        adapter = OriginAdapter()
+        with patch.object(adapter, "scan_active_graph", return_value=info):
+            payload = dispatch(adapter, "scan_active_graph", {})
 
         self.assertEqual(payload, {"name": "Graph1", "layers": [{"index": 1, "plot_count": 2}]})
         self.assertEqual(graph_info_from_dict(payload), info)
@@ -195,6 +196,41 @@ class OriginAdapterSnapshotTests(unittest.TestCase):
             result = adapter.restore_style_snapshot(snapshot)
 
         self.assertEqual(result.target_name, "CurrentGraph")
+
+    def test_worker_rejects_missing_or_unknown_scope_before_touching_origin(self) -> None:
+        cases = (
+            ({"layer_indices": []}, KeyError),
+            ({"layer_scope": "unknown", "layer_indices": []}, OriginAutomationError),
+        )
+        for target, error in cases:
+            with self.subTest(target=target):
+                adapter = MagicMock(spec=OriginAdapter)
+                payload = patch_to_dict(self.patch)
+                payload["target"] = target
+                with self.assertRaises(error):
+                    dispatch(adapter, "apply_patch", {"patch": payload})
+                adapter.read_style_snapshot.assert_not_called()
+                adapter.apply_style_patch.assert_not_called()
+
+    def test_restore_partial_snapshot_keeps_unreadable_fields_and_restores_raw_title(self) -> None:
+        adapter = OriginAdapter()
+        graph = MagicMock()
+        graph.name = "Current"
+        graph.__len__.return_value = 1
+        layer = graph[0]
+        snapshot = StyleSnapshot(
+            "Original", [1], {"legend.visibility", "axis.grid", "text.x_title", "plot.line_width_pt"},
+            {1: {"legend": {"visibility": None}, "axis": {"show_grid": 1},
+                 "text": {"x_title_raw": r"E\-(g)"}, "plot": {"line_width_pt": None}}},
+        )
+        with patch.object(adapter, "connect"), patch.object(adapter, "_find_graph", return_value=graph):
+            result = adapter.restore_style_snapshot(snapshot)
+
+        self.assertEqual(set(result.applied), {"axis.grid[1]", "text.x_title[1]"})
+        self.assertEqual({item.split(":")[0] for item in result.failed}, {"legend.visibility[1]", "plot.line_width_pt[1]"})
+        self.assertEqual(layer.axis("x").title, r"E\-(g)")
+        layer.lt_exec.assert_called_once_with("layer.x.showGrids=1;layer.y.showGrids=1;")
+        layer.plot_list.assert_not_called()
 
     def test_worker_dispatch_reads_snapshot_then_applies_patch(self) -> None:
         snapshot = StyleSnapshot("Graph1", [1], set(), {1: {}})

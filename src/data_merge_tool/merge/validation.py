@@ -21,8 +21,9 @@ def validate_x_series(path: Path, current_x: pd.Series, reference_x: pd.Series, 
     if current_x.equals(reference_x):
         return
 
-    current_values = current_x.reset_index(drop=True)
-    reference_values = reference_x.reset_index(drop=True)
+    # Compare rows by position, including Series with custom index labels.
+    current_values = pd.Series(current_x.array, copy=False)
+    reference_values = pd.Series(reference_x.array, copy=False)
     both_empty = current_values.isna() & reference_values.isna()
     same_values = current_values.eq(reference_values).fillna(False)
     mismatch = ~(same_values | both_empty)
@@ -40,12 +41,14 @@ def validate_x_series(path: Path, current_x: pd.Series, reference_x: pd.Series, 
 def format_column_numbers(columns: Sequence[int]) -> str:
     return ", ".join(str(column) for column in columns)
 
-def preflight_merge_columns(paths: Sequence[str], options: MergeOptions) -> None:
+def preflight_merge_columns(paths: Sequence[str], options: MergeOptions) -> tuple[list[int], list[list[object]]]:
+    """Return the selected source indices and each file's column names in queue order."""
     if not paths:
         raise UserVisibleError("请先添加要合并的数据文件。")
 
     x_index = options.x_column - 1
-    if options.keep_single_x and x_index < 0:
+    includes_x = options.keep_single_x or x_index in options.y_columns
+    if includes_x and x_index < 0:
         raise UserVisibleError("X 列号必须从 1 开始。")
 
     if options.keep_single_x:
@@ -54,9 +57,10 @@ def preflight_merge_columns(paths: Sequence[str], options: MergeOptions) -> None
             raise UserVisibleError("保留单个 X 列时，Y 列不能只包含 X 列。")
     else:
         selected_y_columns = list(options.y_columns)
-        if not selected_y_columns and not options.y_columns_auto:
+        if not selected_y_columns:
             raise UserVisibleError("未保留 X 列时，请至少选择一个要合并的列。")
 
+    headers: list[list[object]] = []
     issues: List[str] = []
     for file_number, raw_path in enumerate(paths, start=1):
         path = Path(raw_path)
@@ -65,23 +69,17 @@ def preflight_merge_columns(paths: Sequence[str], options: MergeOptions) -> None
         except UserVisibleError as exc:
             issues.append(f"{file_number}. {path.name}：读取列结构失败：{exc}")
             continue
-        except Exception as exc:
-            issues.append(f"{file_number}. {path.name}：读取列结构失败：{exc}")
-            continue
 
+        headers.append(columns)
         column_count = len(columns)
         file_issues: List[str] = []
         if column_count == 0:
             file_issues.append("未读到任何列")
 
-        if options.keep_single_x and x_index >= column_count:
+        if includes_x and x_index >= column_count:
             file_issues.append(f"X 列 {options.x_column} 超出范围（当前 {column_count} 列）")
 
-        if options.y_columns_auto:
-            y_columns = [idx for idx in range(column_count) if not (options.keep_single_x and idx == x_index)]
-        else:
-            y_columns = selected_y_columns
-        invalid_y_columns = [idx + 1 for idx in y_columns if idx < 0 or idx >= column_count]
+        invalid_y_columns = [idx + 1 for idx in selected_y_columns if idx != x_index and not 0 <= idx < column_count]
         if invalid_y_columns:
             file_issues.append(
                 f"Y 列 {format_column_numbers(invalid_y_columns)} 超出范围（当前 {column_count} 列）"
@@ -96,3 +94,6 @@ def preflight_merge_columns(paths: Sequence[str], options: MergeOptions) -> None
             "以下文件的列结构不支持当前 X/Y 列选择，请调整列选择或文件列表后再合并：\n\n"
             f"{detail}"
         )
+
+    selected = [x_index, *selected_y_columns] if options.keep_single_x else selected_y_columns
+    return selected, headers

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -15,14 +16,15 @@ class ReadOptionsPanel(QGroupBox):
     """Own read-option controls and detection state for one reference file."""
 
     options_changed = Signal()
+    status_message = Signal(str, int)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._reference_path: Optional[Path] = None
-        self._detection_signature: Optional[tuple[str, str, str, int, bool]] = None
         self._detection: Optional[ReadDetection] = None
         self._updating_controls = False
         self._build_ui()
+        self._manual_options = self._control_options()
         self._connect_signals()
         self._sync_control_state()
 
@@ -92,14 +94,14 @@ class ReadOptionsPanel(QGroupBox):
             self.skip_mode_box,
             self.header_mode_box,
             self.delimiter_mode_box,
-            self.delimiter_box,
             self.encoding_mode_box,
-            self.encoding_box,
         ):
             combo.currentIndexChanged.connect(self._on_settings_changed)
-        self.skip_spin.valueChanged.connect(self._on_settings_changed)
-        self.header_check.stateChanged.connect(self._on_settings_changed)
-        self.skip_bad_check.stateChanged.connect(self._on_settings_changed)
+        self.skip_spin.valueChanged.connect(lambda rows: self._set_manual_option(skip_rows=rows))
+        self.header_check.toggled.connect(lambda checked: self._set_manual_option(has_header=checked))
+        self.delimiter_box.currentTextChanged.connect(lambda text: self._set_manual_option(delimiter_label=text))
+        self.encoding_box.currentTextChanged.connect(lambda text: self._set_manual_option(encoding_label=text))
+        self.skip_bad_check.toggled.connect(lambda checked: self._set_manual_option(skip_bad_lines=checked))
 
     def set_reference_path(self, path: Optional[Path]) -> None:
         normalized = Path(path) if path is not None else None
@@ -108,86 +110,77 @@ class ReadOptionsPanel(QGroupBox):
         self._reference_path = normalized
         self.invalidate_detection()
 
-    def reference_path(self) -> Optional[Path]:
-        return self._reference_path
-
     def invalidate_detection(self) -> None:
-        self._detection_signature = None
         self._detection = None
+        self._display_options(self._manual_options)
 
     def current_detection(self) -> ReadDetection:
-        fallback = ReadDetection(
+        manual = self._manual_options
+        if self._reference_path is None:
+            return ReadDetection(
+                skip_rows=manual.skip_rows,
+                delimiter_label=manual.delimiter_label,
+                encoding_label=manual.encoding_label,
+                has_header=manual.has_header,
+                confident=False,
+                message="未选择预览文件，继续使用手动读入设置。",
+            )
+
+        if self._detection is not None:
+            return self._detection
+
+        auto_delimiter = self.delimiter_mode_box.currentText() == "自动"
+        auto_encoding = self.encoding_mode_box.currentText() == "自动"
+        auto_skip = self.skip_mode_box.currentText() == "自动"
+        auto_header = self.header_mode_box.currentText() == "自动"
+        detected = detect_read_options(
+            self._reference_path,
+            "自动" if auto_delimiter else manual.delimiter_label,
+            "自动" if auto_encoding else manual.encoding_label,
+            manual.skip_rows,
+            manual.has_header,
+        )
+        self._detection = detected
+        self._display_options(
+            ReadOptions(
+                skip_rows=detected.skip_rows if auto_skip and detected.confident else manual.skip_rows,
+                delimiter_label=(
+                    detected.delimiter_label if auto_delimiter and detected.confident else manual.delimiter_label
+                ),
+                encoding_label=detected.encoding_label if auto_encoding else manual.encoding_label,
+                has_header=detected.has_header if auto_header and detected.confident else manual.has_header,
+                skip_bad_lines=manual.skip_bad_lines,
+            )
+        )
+        if not detected.confident and (auto_skip or auto_header or auto_delimiter):
+            self.status_message.emit(f"{self._reference_path.name}：{detected.message}", 8000)
+        return detected
+
+    def current_options(self) -> ReadOptions:
+        self.current_detection()
+        return self._control_options()
+
+    def _control_options(self) -> ReadOptions:
+        return ReadOptions(
             skip_rows=self.skip_spin.value(),
             delimiter_label=self.delimiter_box.currentText(),
             encoding_label=self.encoding_box.currentText(),
             has_header=self.header_check.isChecked(),
-            confident=False,
-            message="未选择预览文件，继续使用手动读入设置。",
-        )
-        if self._reference_path is None:
-            return fallback
-
-        signature = self._current_detection_signature()
-        if signature != self._detection_signature or self._detection is None:
-            self._detection = detect_read_options(
-                self._reference_path,
-                self._detection_delimiter_label(),
-                self._detection_encoding_label(),
-                self.skip_spin.value(),
-                self.header_check.isChecked(),
-            )
-
-        self._apply_detection(self._detection)
-        # Auto detection updates disabled controls to show the detected values.
-        # Cache that displayed state so a second read does not immediately
-        # repeat the same file probe.
-        self._detection_signature = self._current_detection_signature()
-        return self._detection
-
-    def current_options(self) -> ReadOptions:
-        detection = self.current_detection()
-        use_auto_skip = self.skip_mode_box.currentText() == "自动" and detection.confident
-        use_auto_header = self.header_mode_box.currentText() == "自动" and detection.confident
-        use_auto_delimiter = self.delimiter_mode_box.currentText() == "自动" and detection.confident
-        use_auto_encoding = self.encoding_mode_box.currentText() == "自动"
-        return ReadOptions(
-            skip_rows=detection.skip_rows if use_auto_skip else self.skip_spin.value(),
-            delimiter_label=(
-                detection.delimiter_label if use_auto_delimiter else self.delimiter_box.currentText()
-            ),
-            encoding_label=detection.encoding_label if use_auto_encoding else self.encoding_box.currentText(),
-            has_header=detection.has_header if use_auto_header else self.header_check.isChecked(),
             skip_bad_lines=self.skip_bad_check.isChecked(),
         )
 
-    def _detection_delimiter_label(self) -> str:
-        return "自动" if self.delimiter_mode_box.currentText() == "自动" else self.delimiter_box.currentText()
+    def _set_manual_option(self, **changes: object) -> None:
+        if not self._updating_controls:
+            self._manual_options = replace(self._manual_options, **changes)
+            self._on_settings_changed()
 
-    def _detection_encoding_label(self) -> str:
-        return "自动" if self.encoding_mode_box.currentText() == "自动" else self.encoding_box.currentText()
-
-    def _current_detection_signature(self) -> tuple[str, str, str, int, bool]:
-        assert self._reference_path is not None
-        return (
-            str(self._reference_path),
-            self._detection_delimiter_label(),
-            self._detection_encoding_label(),
-            self.skip_spin.value(),
-            self.header_check.isChecked(),
-        )
-
-    def _apply_detection(self, detection: ReadDetection) -> None:
+    def _display_options(self, options: ReadOptions) -> None:
         self._updating_controls = True
         try:
-            if self.skip_mode_box.currentText() == "自动" and detection.confident:
-                self.skip_spin.setValue(detection.skip_rows)
-            if self.header_mode_box.currentText() == "自动" and detection.confident:
-                self.header_check.setChecked(detection.has_header)
-            if self.delimiter_mode_box.currentText() == "自动" and detection.confident:
-                self._add_or_select_combo_text(self.delimiter_box, detection.delimiter_label)
-            if self.encoding_mode_box.currentText() == "自动" and detection.encoding_label:
-                self._add_or_select_combo_text(self.encoding_box, detection.encoding_label)
-            self._sync_control_state()
+            self.skip_spin.setValue(options.skip_rows)
+            self.header_check.setChecked(options.has_header)
+            self._add_or_select_combo_text(self.delimiter_box, options.delimiter_label)
+            self._add_or_select_combo_text(self.encoding_box, options.encoding_label)
         finally:
             self._updating_controls = False
 
@@ -206,8 +199,6 @@ class ReadOptionsPanel(QGroupBox):
         self.encoding_box.setEnabled(self.encoding_mode_box.currentText() == "手动")
 
     def _on_settings_changed(self, *_args) -> None:
-        if self._updating_controls:
-            return
         self.invalidate_detection()
         self._sync_control_state()
         self.options_changed.emit()

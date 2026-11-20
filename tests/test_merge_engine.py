@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -15,7 +17,8 @@ if str(SRC) not in sys.path:
 
 from data_merge_tool.data_types import MergeOptions, ReadOptions
 from data_merge_tool.errors import UserVisibleError
-from data_merge_tool.merge.engine import build_origin_import_table
+from data_merge_tool.data_reading.readers import read_table_columns
+from data_merge_tool.merge.engine import build_origin_import_table, build_prechecked_merged_table
 
 
 READ_OPTIONS = ReadOptions(
@@ -31,14 +34,12 @@ def merge_options(
     *,
     keep_single_x: bool,
     y_columns: list[int],
-    y_columns_auto: bool = False,
     validate_x: bool = True,
     label_mode: str = "smart",
 ) -> MergeOptions:
     return MergeOptions(
         read=READ_OPTIONS,
         y_columns=y_columns,
-        y_columns_auto=y_columns_auto,
         keep_single_x=keep_single_x,
         x_column=1,
         validate_x=validate_x,
@@ -52,6 +53,59 @@ def write_series(path: Path, rows: list[tuple[float, float]]) -> None:
 
 
 class MergeEngineTests(unittest.TestCase):
+    def test_per_file_x_uses_one_header_read_and_keeps_selected_order_for_plain_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first, second = root / "series 1.csv", root / "series 2.csv"
+            first.write_text("a,x,b\n1,10,11\n2,20,22\n", encoding="utf-8")
+            second.write_text("a,x,b\n3,30,33\n", encoding="utf-8")
+            paths = [str(first), str(second)]
+            options = replace(merge_options(keep_single_x=False, y_columns=[2, 1, 0]), x_column=2)
+            plain = build_prechecked_merged_table(paths, options)
+            with patch("data_merge_tool.merge.validation.read_table_columns", wraps=read_table_columns) as read_headers:
+                origin = build_origin_import_table(paths, options)
+
+        self.assertEqual([call.args[0] for call in read_headers.call_args_list], [first, second])
+        self.assertEqual(plain.long_names, ["b", "x", "a"] * 2)
+        self.assertEqual(origin.long_names, ["x", "b", "a"] * 2)
+        self.assertEqual(origin.axis_spec, "xyyxyy")
+        self.assertEqual(origin.dataframe.iloc[0].tolist(), [10, 11, 1, 30, 33, 3])
+        self.assertTrue(origin.dataframe.iloc[1, 3:].isna().all())
+        self.assertEqual(options.y_columns, [2, 1, 0])
+
+    def test_per_file_x_reports_all_incompatible_sources_before_reading_data(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            paths = [Path(folder) / name for name in ("first.csv", "second.csv")]
+            for path in paths:
+                write_series(path, [(0, 1)])
+            with patch("data_merge_tool.merge.engine.read_table") as read_data, self.assertRaises(UserVisibleError) as error:
+                build_origin_import_table(
+                    [str(path) for path in paths],
+                    replace(merge_options(keep_single_x=False, y_columns=[2, 3]), x_column=3),
+                )
+            read_data.assert_not_called()
+        self.assertIn("1. first.csv", str(error.exception))
+        self.assertIn("2. second.csv", str(error.exception))
+        self.assertEqual(str(error.exception).count("X 列 3 超出范围"), 2)
+        self.assertEqual(str(error.exception).count("Y 列 4 超出范围"), 2)
+
+    def test_shared_numeric_x_still_matches_after_a_text_footer_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "series 1.csv"
+            second = Path(folder) / "series 2.csv"
+            write_series(first, [(0, 10), (1, 11)])
+            second.write_text("x,signal\n0,20\n1,21\nend,of run\n", encoding="utf-8")
+            options = replace(
+                merge_options(keep_single_x=True, y_columns=[1]),
+                read=replace(READ_OPTIONS, skip_bad_lines=True),
+            )
+            result = build_origin_import_table([str(first), str(second)], options)
+
+        pd.testing.assert_frame_equal(
+            result.dataframe,
+            pd.DataFrame({"x": [0, 1], "1_signal": [10, 11], "2_signal": [20, 21]}),
+        )
+
     def test_shared_x_origin_table_has_one_x_and_metadata_for_each_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -90,7 +144,7 @@ class MergeEngineTests(unittest.TestCase):
 
             result = build_origin_import_table(
                 [str(first), str(second)],
-                merge_options(keep_single_x=False, y_columns=[], y_columns_auto=True),
+                merge_options(keep_single_x=False, y_columns=[0, 1]),
             )
 
         self.assertEqual(
